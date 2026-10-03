@@ -9,6 +9,11 @@ This module implements a standalone process that:
    output buffer for the requesting DP rank, and signals the corresponding
    IPC semaphore.
 
+With ``QWEN38_PLE_GPU=GPU-<uuid>`` (configs/ple-gpu.env) this process instead binds
+to that one extra GPU, which is not a TP rank, and keeps the n-gram table there
+(hot shards in its memory, the rest in pinned host memory it reads through UVA).
+The handshake with the TP workers is unchanged.
+
 The TP workers within one DP rank receive identical inputs, so the CPU result
 is computed once per DP rank and fanned out to all of its TP ranks.
 
@@ -161,6 +166,26 @@ def _init_offload_distributed() -> None:
     )
 
 
+def _bind_ple_gpu(selector: str) -> None:
+    """Check that CUDA_VISIBLE_DEVICES (inherited from make_process) selected the PLE GPU."""
+    count = torch.cuda.device_count()
+    if count != 1:
+        raise RuntimeError(
+            f"QWEN38_PLE_GPU={selector}: expected exactly one visible CUDA device in the PLE "
+            f"offload process, found {count}. Pass that GPU to the container (GPU_DEVICES in "
+            "configs/ple-gpu.env) and keep it out of the TP workers' CUDA_VISIBLE_DEVICES.")
+    properties = torch.cuda.get_device_properties(0)
+    uuid = str(getattr(properties, "uuid", "")).lower()
+    wanted = selector.lower().removeprefix("gpu-")
+    if not selector.isdigit() and not uuid.startswith(wanted):
+        raise RuntimeError(
+            f"QWEN38_PLE_GPU={selector}, but the visible CUDA device is {properties.name} GPU-{uuid}")
+    torch.cuda.set_device(0)
+    free_bytes, total_bytes = torch.cuda.mem_get_info(0)
+    logger.info("PLE offload process bound to %s (GPU-%s): %.2f of %.2f GiB free.",
+                properties.name, uuid, free_bytes / 2**30, total_bytes / 2**30)
+
+
 class PleOffloadWorker:
     """Manage process creation, READY handshake, and the child entry point."""
 
@@ -195,10 +220,21 @@ class PleOffloadWorker:
         parent = multiprocessing.process._current_process  # type: ignore[attr-defined]
         saved_daemon = parent._config.get("daemon")
         parent._config["daemon"] = False
+        # A third GPU can own the PLE table (QWEN38_PLE_GPU=GPU-<uuid>). The child inherits
+        # the environment, so hand it that one device; this TP worker keeps its own.
+        ple_gpu = os.environ.get("QWEN38_PLE_GPU", "").strip()
+        saved_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if ple_gpu:
+            os.environ["CUDA_VISIBLE_DEVICES"] = ple_gpu
         try:
             proc.start()
         finally:
             parent._config["daemon"] = saved_daemon
+            if ple_gpu:
+                if saved_visible is None:
+                    os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+                else:
+                    os.environ["CUDA_VISIBLE_DEVICES"] = saved_visible
         ready_writer.close()
         return PleOffloadWorkerHandle(
             proc=proc,
@@ -246,6 +282,9 @@ class PleOffloadWorker:
     ) -> None:
         """Load PLE weights, accept registrations, and run the request loop."""
         decorate_logs("PleOffloadWorker")
+        ple_gpu = os.environ.get("QWEN38_PLE_GPU", "").strip()
+        if ple_gpu:
+            _bind_ple_gpu(ple_gpu)
         if os.environ.get("QWEN38_CPU_EXPERTS") == "1":
             # Keep PLE lookups off the SMT siblings of the CPU expert pool's cores (vllm/qwen38_host.py).
             from vllm import qwen38_host

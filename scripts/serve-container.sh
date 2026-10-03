@@ -75,6 +75,17 @@ rankings=/workspace/static_hot_cache_rankings.json
 }
 
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
+ple_gpu=${QWEN38_PLE_GPU:-}
+if [[ -n "$ple_gpu" ]]; then
+  # A third GPU holds the PLE n-gram table (configs/ple-gpu.env). It must be visible to the container
+  # but stays out of CUDA_VISIBLE_DEVICES: the PLE offload process selects it by UUID when it starts.
+  if ! nvidia-smi -L 2>/dev/null | grep -Fq "$ple_gpu"; then
+    echo "QWEN38_PLE_GPU=$ple_gpu is not visible in the container; pass it with GPU_DEVICES (see configs/ple-gpu.env)" >&2
+    exit 2
+  fi
+  # Three GPUs are visible now; make 0,1 mean the two TP cards by bus order rather than a speed heuristic.
+  export CUDA_DEVICE_ORDER=${CUDA_DEVICE_ORDER:-PCI_BUS_ID}
+fi
 export PYTORCH_CUDA_ALLOC_CONF=$allocator_config
 export VLLM_PLE_CPU_OFFLOAD=1
 export VLLM_WNA16_STATIC_HOT_CACHE_FILE=$rankings

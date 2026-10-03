@@ -42,6 +42,10 @@ Configured or allocated swap is not automatically a serving failure. Continuous
 swap traffic is. Watch `vmstat 1` while generating: persistent nonzero `si` or
 `so` means the working set is reaching storage and throughput will suffer.
 
+A third GPU can carry part of the PLE table ([`configs/ple-gpu.env`](../configs/ple-gpu.env)): the shards
+that fit in its memory leave host RAM, the rest stay pinned (33.5 GiB with a 16 GB card instead of the
+47.7 GiB table). See [the hardware guide](hardware.md#a-third-gpu-for-the-ple-table).
+
 ## 64 GB RAM: the 2x3090-64gb profile
 
 The 128 GB profiles keep two large pools in system RAM: a pinned copy of every routed expert (about 58 GiB,
