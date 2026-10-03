@@ -1,0 +1,285 @@
+{
+ "method": "Same server image, baseline = checked-in .env (CPU PLE worker, 5060 Ti not exposed) vs F5 = configs/fast-256k-prefill.env + configs/ple-gpu.env. Fixed public texts scored with prompt_logprobs (max_tokens 1, unique cache_salt), two passes per configuration; eight checkable chat prompts, greedy (temperature 0, seed 1, max_tokens 2048), two passes per configuration. Replies are not published.",
+ "caveat": "prompt_logprobs materialize full-vocabulary logits per prompt token; a 3K-token text ran the F5 server out of VRAM, so scored texts are about 500-650 tokens each (2,256 tokens per pass).",
+ "verdict": "no systematic shift: signed F5 - baseline per token is within +/-0.01 nats on every text and averages about 0; cross-configuration deltas match within-configuration run-to-run deltas; identical pass pattern (15/16 each) and identical answers wherever a configuration is stable with itself.",
+ "fixed_texts": {
+  "architecture": {
+   "tokens": 514,
+   "source": "docs/architecture.md first 2,000 characters",
+   "baseline_total_nats": [
+    -1193.51,
+    -1192.63
+   ],
+   "f5_total_nats": [
+    -1196.62,
+    -1194.26
+   ],
+   "within_baseline_abs_delta": 0.88,
+   "within_f5_abs_delta": 2.37,
+   "cross_abs_delta": [
+    3.12,
+    0.75,
+    3.99,
+    1.63
+   ],
+   "per_token_mean_abs_delta_cross": 0.1089,
+   "per_token_mean_abs_delta_within": 0.1031,
+   "f5_minus_baseline_nats_per_token": -0.0046
+  },
+  "performance": {
+   "tokens": 644,
+   "source": "docs/performance.md first 2,000 characters",
+   "baseline_total_nats": [
+    -1334.64,
+    -1330.33
+   ],
+   "f5_total_nats": [
+    -1327.25,
+    -1325.53
+   ],
+   "within_baseline_abs_delta": 4.3,
+   "within_f5_abs_delta": 1.72,
+   "cross_abs_delta": [
+    7.39,
+    9.11,
+    3.08,
+    4.8
+   ],
+   "per_token_mean_abs_delta_cross": 0.1148,
+   "per_token_mean_abs_delta_within": 0.1077,
+   "f5_minus_baseline_nats_per_token": 0.0095
+  },
+  "memory": {
+   "tokens": 528,
+   "source": "docs/memory.md first 2,000 characters",
+   "baseline_total_nats": [
+    -1066.85,
+    -1057.84
+   ],
+   "f5_total_nats": [
+    -1066.98,
+    -1067.94
+   ],
+   "within_baseline_abs_delta": 9.02,
+   "within_f5_abs_delta": 0.96,
+   "cross_abs_delta": [
+    0.13,
+    1.09,
+    9.15,
+    10.11
+   ],
+   "per_token_mean_abs_delta_cross": 0.1193,
+   "per_token_mean_abs_delta_within": 0.1204,
+   "f5_minus_baseline_nats_per_token": -0.0097
+  },
+  "hardware": {
+   "tokens": 570,
+   "source": "docs/hardware.md first 2,000 characters",
+   "baseline_total_nats": [
+    -1177.4,
+    -1170.93
+   ],
+   "f5_total_nats": [
+    -1173.59,
+    -1169.21
+   ],
+   "within_baseline_abs_delta": 6.46,
+   "within_f5_abs_delta": 4.38,
+   "cross_abs_delta": [
+    3.81,
+    8.19,
+    2.65,
+    1.72
+   ],
+   "per_token_mean_abs_delta_cross": 0.1045,
+   "per_token_mean_abs_delta_within": 0.0915,
+   "f5_minus_baseline_nats_per_token": 0.0049
+  }
+ },
+ "chat_prompts": [
+  {
+   "id": "train",
+   "prompt": "arrival time of a train (3:40 pm, 212 km, 80 km/h); thinking on; expects 6:19",
+   "baseline_pass": [
+    true,
+    true
+   ],
+   "f5_pass": [
+    true,
+    true
+   ],
+   "baseline_tokens": [
+    172,
+    172
+   ],
+   "f5_tokens": [
+    172,
+    172
+   ],
+   "identical_answer_within_baseline": true,
+   "identical_answer_within_f5": true,
+   "identical_answer_cross_pairs_of_4": 4
+  },
+  {
+   "id": "arith",
+   "prompt": "17 x 23 - 19^2, number only; thinking off; expects 30 (the model answered 180 then 18 in both configurations)",
+   "baseline_pass": [
+    false,
+    true
+   ],
+   "f5_pass": [
+    false,
+    true
+   ],
+   "baseline_tokens": [
+    4,
+    100
+   ],
+   "f5_tokens": [
+    4,
+    100
+   ],
+   "identical_answer_within_baseline": false,
+   "identical_answer_within_f5": false,
+   "identical_answer_cross_pairs_of_4": 2
+  },
+  {
+   "id": "balanced",
+   "prompt": "write is_balanced(s) for ()[]{}; thinking on; code executed on 5 cases",
+   "baseline_pass": [
+    true,
+    true
+   ],
+   "f5_pass": [
+    true,
+    true
+   ],
+   "baseline_tokens": [
+    169,
+    155
+   ],
+   "f5_tokens": [
+    162,
+    170
+   ],
+   "identical_answer_within_baseline": true,
+   "identical_answer_within_f5": true,
+   "identical_answer_cross_pairs_of_4": 4
+  },
+  {
+   "id": "rle",
+   "prompt": "write rle(s) run-length encoder; thinking off; code executed on 3 cases",
+   "baseline_pass": [
+    true,
+    true
+   ],
+   "f5_pass": [
+    true,
+    true
+   ],
+   "baseline_tokens": [
+    115,
+    115
+   ],
+   "f5_tokens": [
+    115,
+    115
+   ],
+   "identical_answer_within_baseline": false,
+   "identical_answer_within_f5": false,
+   "identical_answer_cross_pairs_of_4": 1
+  },
+  {
+   "id": "longdoc",
+   "prompt": "AGENTS.md (~15K tokens) + which variable turns on the exact QSA selector; thinking on; expects VLLM_QSA_EXACT_TOPK",
+   "baseline_pass": [
+    true,
+    true
+   ],
+   "f5_pass": [
+    true,
+    true
+   ],
+   "baseline_tokens": [
+    117,
+    100
+   ],
+   "f5_tokens": [
+    100,
+    119
+   ],
+   "identical_answer_within_baseline": true,
+   "identical_answer_within_f5": true,
+   "identical_answer_cross_pairs_of_4": 4
+  },
+  {
+   "id": "saturn",
+   "prompt": "planet with the most confirmed moons, one word; thinking off",
+   "baseline_pass": [
+    true,
+    true
+   ],
+   "f5_pass": [
+    true,
+    true
+   ],
+   "baseline_tokens": [
+    3,
+    3
+   ],
+   "f5_tokens": [
+    3,
+    3
+   ],
+   "identical_answer_within_baseline": true,
+   "identical_answer_within_f5": true,
+   "identical_answer_cross_pairs_of_4": 4
+  },
+  {
+   "id": "primes",
+   "prompt": "first 8 primes as a JSON array; thinking off",
+   "baseline_pass": [
+    true,
+    true
+   ],
+   "f5_pass": [
+    true,
+    true
+   ],
+   "baseline_tokens": [
+    29,
+    29
+   ],
+   "f5_tokens": [
+    29,
+    29
+   ],
+   "identical_answer_within_baseline": true,
+   "identical_answer_within_f5": true,
+   "identical_answer_cross_pairs_of_4": 4
+  },
+  {
+   "id": "tool",
+   "prompt": "weather question with a get_weather tool; expects a tool call with city Paris",
+   "baseline_pass": [
+    true,
+    true
+   ],
+   "f5_pass": [
+    true,
+    true
+   ],
+   "baseline_tokens": [
+    26,
+    26
+   ],
+   "f5_tokens": [
+    26,
+    26
+   ],
+   "identical_answer_within_baseline": true,
+   "identical_answer_within_f5": true,
+   "identical_answer_cross_pairs_of_4": 4
+  }
+ ]
+}

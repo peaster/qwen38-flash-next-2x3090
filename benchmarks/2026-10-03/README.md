@@ -54,6 +54,33 @@ usable headroom is smaller than the nvidia-smi peak suggests.
   bit-exactly. Output-token hashes still differed between configurations, as greedy output does on this
   runtime (MTP batches, approximate QSA).
 
+## Quality check: baseline versus F5
+
+Same image; baseline is the checked-in `.env` with the CPU PLE worker and the 5060 Ti not exposed, F5 is the
+new profile. Two kinds of evidence, each run twice per configuration so that run-to-run variation of the
+runtime itself (MTP batches, approximate QSA) is visible ([`raw/quality-check.json`](raw/quality-check.json)).
+
+Fixed public texts scored with `prompt_logprobs` (about 500–650 tokens each; longer texts run the cards out
+of VRAM because every prompt token materializes full-vocabulary logits):
+
+| Text | Tokens | Within-config \|Δ\| (baseline / F5) | Cross-config \|Δ\| (4 pairs) | F5 − baseline per token |
+|---|---:|---:|---:|---:|
+| docs/architecture.md | 514 | 0.88 / 2.37 nats | 0.75–3.99 | −0.0046 nats |
+| docs/performance.md | 644 | 4.30 / 1.72 | 3.08–9.11 | +0.0095 |
+| docs/memory.md | 528 | 9.02 / 0.96 | 0.13–10.11 | −0.0097 |
+| docs/hardware.md | 570 | 6.46 / 4.38 | 1.72–8.19 | +0.0049 |
+
+The per-token mean |Δ| across configurations (0.10–0.12 nats) equals the within-configuration value
+(0.09–0.12), and the signed differences alternate in sign and average about zero. For scale, the repo rejected
+INT8 dense weights at +0.010 nats per token.
+
+Eight checkable greedy prompts (math, two code tasks executed against test cases, retrieval from the ~15K-token
+AGENTS.md, a fact, JSON formatting, a tool call): 15 of 16 passes in both configurations with the same miss (the
+arithmetic prompt with thinking off, where both configurations produced the same two wrong answers in the same
+order). Answer text was byte-identical across configurations on every prompt where a configuration was
+identical with itself; the three prompts whose text differed across configurations also differed between two
+passes of the same configuration. Replies are not published.
+
 ## Caveats
 
 Two long runs per configuration; differences under about 5% are noise. F2's first long run included JIT
