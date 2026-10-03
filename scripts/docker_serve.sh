@@ -86,6 +86,15 @@ if [[ -n "${JIT_CACHE_DIR:-}" ]]; then
   )
 fi
 
+# GPUs handed to the container. "all" is the default. With a PLE GPU (configs/ple-gpu.env) name the
+# TP pair and the PLE card by UUID, GPU_DEVICES=device=GPU-...,GPU-...,GPU-...; docker parses the
+# value as CSV, so a comma list is quoted here.
+gpu_devices=${GPU_DEVICES:-all}
+case "$gpu_devices" in
+  \"*\") ;;
+  *,*) gpu_devices="\"$gpu_devices\"" ;;
+esac
+
 model_dir=$(cd -- "$model_dir" && pwd -P)
 [[ -f "$model_dir/model.safetensors.index.json" ]] || {
   echo "MODEL_DIR is not a model checkpoint: $model_dir" >&2
@@ -94,7 +103,7 @@ model_dir=$(cd -- "$model_dir" && pwd -P)
 
 exec docker run --rm \
   --name qwen38-flash-next \
-  --gpus all \
+  --gpus "$gpu_devices" \
   --ipc host \
   --cap-add SYS_PTRACE \
   --ulimit memlock=-1 \

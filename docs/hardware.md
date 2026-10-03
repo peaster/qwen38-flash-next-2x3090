@@ -120,6 +120,18 @@ CUDA graph registration fails with the default expandable-segment allocator.
 That flag controls vLLM's custom collective, not driver-level peer access.
 See the [allocator settings and test protocol](performance.md#cuda-p2p-and-custom-all-reduce).
 
+## A third GPU for the PLE table
+
+A GPU that is not one of the two TP cards can hold the PLE n-gram table instead of host RAM:
+`QWEN38_PLE_GPU=GPU-<uuid>` in [`configs/ple-gpu.env`](../configs/ple-gpu.env) binds the PLE offload process
+to it, keeps as many 381 MiB shards as fit in its memory (38 of 128 on a 16 GB card) and reads the rest from
+pinned host memory through UVA. CUDA peer access to the TP cards is not needed; the table's consumer is a
+host process. Speed does not change; on the October 3 test host (2× RTX 3090 at PCIe 4.0 ×8 plus an RTX
+5060 Ti 16 GB on a chipset PCIe 3.0 ×4 slot) it freed about 13 GiB of RAM, which the
+[prefill profile](../configs/fast-256k-prefill.env) spends on 8,192-token chunks. Pass the card to the
+container with `GPU_DEVICES` (a CDI spec generated before the card was installed does not list it under
+`all`). Results and limits: [`benchmarks/2026-10-03/`](../benchmarks/2026-10-03/README.md).
+
 ## Why system memory bandwidth matters
 
 This runtime intentionally uses the host as an active memory tier:

@@ -296,6 +296,42 @@ the rest one ulp apart. Results (`benchmarks/2026-10-02/`, v0.5.0 image plus thi
 
 Keep test prompts mild (`benchmarks/2026-10-02/` lists them) and do not publish replies.
 
+## October 3 PLE table on a third GPU and the x8 prefill profile
+
+`QWEN38_PLE_GPU=GPU-<uuid>` (`configs/ple-gpu.env`) binds the PLE offload process to a GPU that is not one of
+the TP ranks. It keeps as many 381 MiB PLE shards as fit in that GPU's memory (38 of 128 on a 16 GB card,
+`QWEN38_PLE_GPU_SHARDS` overrides the auto fit, `QWEN38_PLE_GPU_RESERVE_GIB` the 1 GiB reserve) and the rest
+once in exact-size pinned host memory that the same GPU reads through UVA (`_PleGpuTable` in
+`models/qwen3_8_flash_next/nvidia/ple_layer.py`). Both parts are contiguous row ranges, so a lookup is two
+`index_select` calls; the result is copied into the existing shared host output buffers, and the TP workers,
+the handshake flags and the GPU-side code are unchanged. The hash constants and pack workspaces are resolved
+per device (`_hash_buffers`), so the CPU path runs the same ops as before. The worker gets the device through
+`CUDA_VISIBLE_DEVICES` set around `proc.start()` in `make_process`; `GPU_DEVICES` in `scripts/docker_serve.sh`
+passes the third card into the container (a CDI spec generated before the card was installed lists only the
+old GPUs under `all`), and the launcher checks that the UUID is visible and sets `CUDA_DEVICE_ORDER=PCI_BUS_ID`
+so 0,1 stay the TP pair. `QWEN38_PLE_GPU_VERIFY=n` compares the first n lookups with the checkpoint rows
+through the mmap table; twelve matched, including six 2,048-token chunks (`benchmarks/2026-10-03/`).
+
+Why that card and that table: the test host's RTX 5060 Ti has no CUDA peer access to the 3090s and sits on a
+chipset PCIe 3.0 x4 slot (2.8 GB/s, 15 µs per small copy), so it cannot be a TP/EP rank, an expert tier or a KV
+tier for them. The PLE lookup is the one serving-path job whose consumer is a host process and whose traffic
+is tiny (64 rows per decode step, 2.5 KB per token out). It does not change speed when the table is resident;
+it turns 47.7 GiB of anonymous RAM into 14.2 GiB of VRAM plus 33.5 GiB of pinned RAM. On the 124 GiB test
+host that took available RAM from 6 to 19 GiB and removed the swap-in the baseline showed.
+
+That headroom paid for prefill. The host's 3090s run at PCIe 4.0 x8 (AM5 lane split), so every prefill chunk
+spends at least 1.55 s streaming a GPU's ~21 GB of cold experts, and the checked-in 2,048-token chunks cap
+prefill near 1,300 tok/s there. `configs/fast-256k-prefill.env` is the fast 256K bundle with 8,192-token
+chunks, hot76 and `QWEN38_EMBED_UVA=1` (the input embedding in pinned host memory, 1.27 GB of RAM, 0.6 GB of
+VRAM per card). Measured 131,072 + 2,048: 3,976 and 4,196 input tok/s (TTFT 33.0 and 31.2 s), 72.0 tok/s
+decode after prefill, 71.3 tok/s on 128 + 256; the same host with the checked-in `.env` gave 865 and 67–71.
+262,016 + 128 completed with zero preemptions and a 23.6 GiB VRAM peak. Rejected on the same day: hot80 with
+8,192-token chunks and 12,288-token chunks with hot72, both `torch.OutOfMemoryError` in the first chunk of the
+131K request. The fast bundle at 4,096-token chunks and hot84 gave 2,300 prefill with the best decode (76–81).
+Do not use `QWEN38_EMBED_UVA=1` without the PLE table off the host on a 128 GB machine; do not read these x8
+numbers as 3090 claims for the x16 benchmark host. Two long runs per configuration: differences under about 5%
+are noise.
+
 ## Published runtime images
 
 From v0.3.0 on, `.github/workflows/publish-image.yml` builds `docker/Dockerfile`

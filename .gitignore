@@ -17,3 +17,4 @@ __pycache__/
 *.onnx
 *.log
 weights/
+/jit-cache/
