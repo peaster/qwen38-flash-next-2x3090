@@ -18,3 +18,4 @@ __pycache__/
 *.log
 weights/
 /jit-cache/
+/.env.bak*

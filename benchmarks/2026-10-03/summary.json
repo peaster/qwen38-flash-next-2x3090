@@ -658,5 +658,6 @@
     }
    }
   }
- ]
+ ],
+ "quality_check": "raw/quality-check.json: baseline vs F5 on fixed-text prompt logprobs and eight checkable greedy prompts; no systematic difference (see README)"
 }
