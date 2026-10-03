@@ -14,7 +14,7 @@ services:
       memlock: -1
       stack: 67108864
     ports:
-      - "127.0.0.1:${PORT:-8000}:${PORT:-8000}"
+      - "0.0.0.0:${PORT:-8000}:${PORT:-8000}"
     environment:
       PORT: "${PORT:-8000}"
       VLLM_QSA_EXACT_TOPK: "${VLLM_QSA_EXACT_TOPK:-0}"

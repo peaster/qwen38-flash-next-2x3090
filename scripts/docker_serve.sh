@@ -100,7 +100,7 @@ exec docker run --rm \
   --ulimit memlock=-1 \
   --ulimit stack=67108864 \
   ${limit_args[@]+"${limit_args[@]}"} \
-  -p "127.0.0.1:$port:$port" \
+  -p "0.0.0.0:$port:$port" \
   "${docker_env[@]}" \
   ${cache_mounts[@]+"${cache_mounts[@]}"} \
   -v "$model_dir:/model:ro" \
