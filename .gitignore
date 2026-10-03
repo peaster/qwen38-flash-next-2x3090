@@ -16,3 +16,4 @@ __pycache__/
 *.pth
 *.onnx
 *.log
+weights/
