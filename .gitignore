@@ -17,3 +17,5 @@ __pycache__/
 *.onnx
 *.log
 weights/
+/jit-cache/
+/.env.bak*

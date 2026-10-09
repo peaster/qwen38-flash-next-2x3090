@@ -1,0 +1,663 @@
+{
+ "date": "2026-10-03",
+ "hardware": "2x RTX 3090 24 GB on CPU root ports at PCIe 4.0 x8 each (NVLink bridge, CUDA P2P OK) + RTX 5060 Ti 16 GB on a chipset slot at PCIe 3.0 x4 (no P2P to the 3090s); AMD Ryzen 9 7950X3D; 124 GiB RAM; swap as listed per run",
+ "image": "qwen38-flash-next-2x3090:ple-gpu-test, local build of this tree's docker/Dockerfile: sha256:ab808d246a762426c0fce350d8179f77309e14d66d9962900d14b2739d11cb9a (not a published image)",
+ "host_software": {
+  "driver": "615.71.09",
+  "kernel": "7.2.7-arch1-1",
+  "docker": "29.8.1",
+  "nvidia_container_toolkit": "1.20.0"
+ },
+ "client": "scripts/benchmark_serving.py, repo-chat prompts, greedy, unique cache salt per request; API-observed TTFT and decode estimate",
+ "pcie_probe": {
+  "rtx_3090_pinned_h2d_gb_s": 13.4,
+  "rtx_3090_pinned_d2h_gb_s": 13.2,
+  "rtx_3090_4kib_copy_us": 7.5,
+  "rtx_5060_ti_pinned_h2d_gb_s": 2.8,
+  "rtx_5060_ti_pinned_d2h_gb_s": 2.9,
+  "rtx_5060_ti_4kib_copy_us": 15.5
+ },
+ "ple_gpu_self_check": "QWEN38_PLE_GPU_VERIFY=12 on the candidate configuration: 12 lookups (5, 4, 1, 6x2,048, 2,040, 8, 4, 4 tokens) matched the checkpoint rows read through the mmap table bit-exactly",
+ "notes": [
+  "Two long runs per configuration: differences under about 5% are within run-to-run spread.",
+  "F2's first long run included JIT compiles for the new 8,192-token shapes; the persistent JIT cache was warm for F3-F5.",
+  "The raw reports' hardware note says 3.5 GB swap; the 64 GB swap partition was activated before F1.",
+  "Baseline and candidate ran before the swap change and the baseline showed swap-in up to 4 MB/s during its long runs."
+ ],
+ "configurations": [
+  {
+   "id": "baseline",
+   "label": "checked-in .env (256K, hot84, 2,048-token chunks, custom all-reduce off, expandable segments on), PLE worker on CPU, 5060 Ti not exposed",
+   "ple_gpu": false,
+   "chunk": 2048,
+   "hot": 84,
+   "embed_uva": false,
+   "fast": false,
+   "swap": "3.5 GB",
+   "shapes": {
+    "short": {
+     "protocol": "128+256 x10, 1 warmup",
+     "raw_report": "raw/baseline-short.json.gz",
+     "raw_json_sha256": "da97a34a15922ededdec484b55bb14bf72765172b29a9b7e3125721d0b8f29e6",
+     "valid_measured_runs": 10,
+     "ttft_seconds": [
+      0.558,
+      0.558,
+      0.551,
+      0.561,
+      0.561,
+      0.556,
+      0.564,
+      0.575,
+      0.581,
+      0.55
+     ],
+     "input_tokens_per_ttft_second": [
+      229.5,
+      229.3,
+      232.1,
+      228.3,
+      228.1,
+      230.3,
+      226.9,
+      222.6,
+      220.4,
+      232.9
+     ],
+     "api_observed_decode_tokens_per_second": [
+      68.72,
+      72.04,
+      69.8,
+      64.8,
+      72.55,
+      68.34,
+      55.51,
+      72.51,
+      61.01,
+      72.08
+     ],
+     "reciprocal_mean_decode_tokens_per_second": 67.26,
+     "host_during_runs": {
+      "mem_used_gib": 118.5,
+      "mem_available_gib": 6.4,
+      "swap_in_kib_s_mean": 28,
+      "swap_in_kib_s_max": 66,
+      "gpu0_peak_mib": 22840,
+      "gpu1_peak_mib": 22832,
+      "gpu2_peak_mib": 2
+     }
+    },
+    "long": {
+     "protocol": "131072+2048 x2, no warmup",
+     "raw_report": "raw/baseline-long.json.gz",
+     "raw_json_sha256": "45792172dd7949b72889e963b74a7347e51ef6758b3be7b6822028331d1b076e",
+     "valid_measured_runs": 2,
+     "ttft_seconds": [
+      155.208,
+      139.997
+     ],
+     "input_tokens_per_ttft_second": [
+      844.5,
+      936.2
+     ],
+     "api_observed_decode_tokens_per_second": [
+      71.65,
+      67.97
+     ],
+     "reciprocal_mean_decode_tokens_per_second": 69.76,
+     "host_during_runs": {
+      "mem_used_gib": 118.6,
+      "mem_available_gib": 6.3,
+      "swap_in_kib_s_mean": 129,
+      "swap_in_kib_s_max": 4030,
+      "gpu0_peak_mib": 23140,
+      "gpu1_peak_mib": 23132,
+      "gpu2_peak_mib": 2
+     },
+     "preemptions_total": 0
+    }
+   }
+  },
+  {
+   "id": "candidate",
+   "label": "same .env with QWEN38_PLE_GPU (38 of 128 PLE shards in the 5060 Ti, 90 pinned in host RAM via UVA)",
+   "ple_gpu": true,
+   "chunk": 2048,
+   "hot": 84,
+   "embed_uva": false,
+   "fast": false,
+   "swap": "3.5 GB",
+   "shapes": {
+    "short": {
+     "protocol": "128+256 x10, 1 warmup",
+     "raw_report": "raw/candidate-short.json.gz",
+     "raw_json_sha256": "86b824416c6a76ee12a42cba18f12e8efeff650e084d47596056170300aae595",
+     "valid_measured_runs": 10,
+     "ttft_seconds": [
+      0.578,
+      0.56,
+      0.564,
+      0.539,
+      0.584,
+      0.553,
+      0.582,
+      0.555,
+      0.56,
+      0.552
+     ],
+     "input_tokens_per_ttft_second": [
+      221.3,
+      228.4,
+      226.9,
+      237.4,
+      219.2,
+      231.7,
+      219.9,
+      230.7,
+      228.7,
+      231.9
+     ],
+     "api_observed_decode_tokens_per_second": [
+      71.25,
+      68.18,
+      71.94,
+      73.32,
+      71.33,
+      66.19,
+      73.51,
+      70.4,
+      71.33,
+      69.35
+     ],
+     "reciprocal_mean_decode_tokens_per_second": 70.61,
+     "host_during_runs": {
+      "mem_used_gib": 105.8,
+      "mem_available_gib": 19.1,
+      "swap_in_kib_s_mean": 10,
+      "swap_in_kib_s_max": 22,
+      "gpu0_peak_mib": 22840,
+      "gpu1_peak_mib": 22832,
+      "gpu2_peak_mib": 14754
+     }
+    },
+    "long": {
+     "protocol": "131072+2048 x2, no warmup",
+     "raw_report": "raw/candidate-long.json.gz",
+     "raw_json_sha256": "299c47c2b222e57f7909fa1ef5991cf92701d9c8298624ae23c9dc8087914801",
+     "valid_measured_runs": 2,
+     "ttft_seconds": [
+      151.125,
+      151.771
+     ],
+     "input_tokens_per_ttft_second": [
+      867.3,
+      863.6
+     ],
+     "api_observed_decode_tokens_per_second": [
+      66.62,
+      67.35
+     ],
+     "reciprocal_mean_decode_tokens_per_second": 66.98,
+     "host_during_runs": {
+      "mem_used_gib": 105.9,
+      "mem_available_gib": 19.0,
+      "swap_in_kib_s_mean": 2,
+      "swap_in_kib_s_max": 34,
+      "gpu0_peak_mib": 23140,
+      "gpu1_peak_mib": 23132,
+      "gpu2_peak_mib": 14754
+     },
+     "preemptions_total": 0
+    }
+   }
+  },
+  {
+   "id": "F1",
+   "label": "fast-256k bundle, 4,096-token chunks, hot84",
+   "ple_gpu": true,
+   "chunk": 4096,
+   "hot": 84,
+   "embed_uva": false,
+   "fast": true,
+   "swap": "64 GB + 3.5 GB",
+   "shapes": {
+    "short": {
+     "protocol": "128+256 x10, 1 warmup",
+     "raw_report": "raw/F1-short.json.gz",
+     "raw_json_sha256": "924e2a60e567a4c04b520e73b4f631661b98a0bfa1aec8aa0e9bdd73c7984fad",
+     "valid_measured_runs": 10,
+     "ttft_seconds": [
+      0.561,
+      1.497,
+      0.577,
+      0.54,
+      0.555,
+      0.595,
+      0.554,
+      0.595,
+      0.571,
+      0.592
+     ],
+     "input_tokens_per_ttft_second": [
+      228.0,
+      85.5,
+      221.7,
+      237.1,
+      230.7,
+      215.0,
+      230.9,
+      215.0,
+      224.3,
+      216.3
+     ],
+     "api_observed_decode_tokens_per_second": [
+      74.25,
+      72.33,
+      76.85,
+      73.89,
+      76.82,
+      78.21,
+      75.72,
+      79.0,
+      76.58,
+      78.65
+     ],
+     "reciprocal_mean_decode_tokens_per_second": 76.17,
+     "host_during_runs": {
+      "mem_used_gib": 103.6,
+      "mem_available_gib": 21.3,
+      "swap_in_kib_s_mean": 21,
+      "swap_in_kib_s_max": 40,
+      "gpu0_peak_mib": 23348,
+      "gpu1_peak_mib": 23340,
+      "gpu2_peak_mib": 14740
+     }
+    },
+    "long": {
+     "protocol": "131072+2048 x2, no warmup",
+     "raw_report": "raw/F1-long.json.gz",
+     "raw_json_sha256": "6a5aeec33cabb6cfd47b06c31b8cecb8e17d3dbcb3e890fbe23df22d14b24fa4",
+     "valid_measured_runs": 2,
+     "ttft_seconds": [
+      57.358,
+      56.135
+     ],
+     "input_tokens_per_ttft_second": [
+      2285.2,
+      2334.9
+     ],
+     "api_observed_decode_tokens_per_second": [
+      80.17,
+      82.54
+     ],
+     "reciprocal_mean_decode_tokens_per_second": 81.34,
+     "host_during_runs": {
+      "mem_used_gib": 103.8,
+      "mem_available_gib": 21.2,
+      "swap_in_kib_s_mean": 243,
+      "swap_in_kib_s_max": 3603,
+      "gpu0_peak_mib": 23950,
+      "gpu1_peak_mib": 23942,
+      "gpu2_peak_mib": 14762
+     },
+     "preemptions_total": 0
+    }
+   }
+  },
+  {
+   "id": "F2",
+   "label": "fast-256k bundle, 8,192-token chunks, hot72",
+   "ple_gpu": true,
+   "chunk": 8192,
+   "hot": 72,
+   "embed_uva": false,
+   "fast": true,
+   "swap": "64 GB + 3.5 GB",
+   "shapes": {
+    "short": {
+     "protocol": "128+256 x10, 1 warmup",
+     "raw_report": "raw/F2-short.json.gz",
+     "raw_json_sha256": "45eca594e2b575a1b602347ff6b59e2d0de051fe5134c8a6140b262bc38be6a7",
+     "valid_measured_runs": 10,
+     "ttft_seconds": [
+      0.763,
+      0.774,
+      0.775,
+      0.774,
+      0.772,
+      0.773,
+      0.727,
+      0.769,
+      0.769,
+      0.77
+     ],
+     "input_tokens_per_ttft_second": [
+      167.8,
+      165.3,
+      165.2,
+      165.4,
+      165.8,
+      165.6,
+      176.0,
+      166.5,
+      166.4,
+      166.2
+     ],
+     "api_observed_decode_tokens_per_second": [
+      68.85,
+      68.56,
+      71.48,
+      68.9,
+      68.99,
+      69.68,
+      67.52,
+      65.73,
+      67.64,
+      67.7
+     ],
+     "reciprocal_mean_decode_tokens_per_second": 68.47,
+     "host_during_runs": {
+      "mem_used_gib": 103.3,
+      "mem_available_gib": 21.6,
+      "swap_in_kib_s_mean": 30,
+      "swap_in_kib_s_max": 88,
+      "gpu0_peak_mib": 22794,
+      "gpu1_peak_mib": 22786,
+      "gpu2_peak_mib": 14740
+     }
+    },
+    "long": {
+     "protocol": "131072+2048 x2, no warmup",
+     "raw_report": "raw/F2-long.json.gz",
+     "raw_json_sha256": "bf482a402620b0a50f427fe423fd18ab68475c800bdc8ea5b23b80a661ef4712",
+     "valid_measured_runs": 2,
+     "ttft_seconds": [
+      33.514,
+      31.791
+     ],
+     "input_tokens_per_ttft_second": [
+      3910.9,
+      4122.9
+     ],
+     "api_observed_decode_tokens_per_second": [
+      73.07,
+      70.95
+     ],
+     "reciprocal_mean_decode_tokens_per_second": 71.99,
+     "host_during_runs": {
+      "mem_used_gib": 103.6,
+      "mem_available_gib": 21.4,
+      "swap_in_kib_s_mean": 188,
+      "swap_in_kib_s_max": 2138,
+      "gpu0_peak_mib": 23834,
+      "gpu1_peak_mib": 23826,
+      "gpu2_peak_mib": 14782
+     },
+     "preemptions_total": 0
+    }
+   }
+  },
+  {
+   "id": "F3",
+   "label": "fast-256k bundle, 8,192-token chunks, QWEN38_EMBED_UVA=1, hot80",
+   "ple_gpu": true,
+   "chunk": 8192,
+   "hot": 80,
+   "embed_uva": true,
+   "fast": true,
+   "swap": "64 GB + 3.5 GB",
+   "outcome": "CUDA out of memory in the first 8,192-token chunk of the 131K request (80 MiB requested, 25 MiB free); short shape completed",
+   "shapes": {
+    "short": {
+     "protocol": "128+256 x10, 1 warmup",
+     "raw_report": "raw/F3-short.json.gz",
+     "raw_json_sha256": "c960b6079c76e197912a224706603c6c93c9dc5aec6ffd6adb45df73ab71bf0e",
+     "valid_measured_runs": 10,
+     "ttft_seconds": [
+      0.633,
+      0.612,
+      0.622,
+      0.583,
+      0.591,
+      0.602,
+      0.595,
+      0.621,
+      0.618,
+      0.624
+     ],
+     "input_tokens_per_ttft_second": [
+      202.3,
+      209.1,
+      205.8,
+      219.6,
+      216.7,
+      212.5,
+      215.3,
+      206.2,
+      207.1,
+      205.3
+     ],
+     "api_observed_decode_tokens_per_second": [
+      73.88,
+      75.63,
+      74.25,
+      74.44,
+      71.29,
+      70.84,
+      73.47,
+      71.62,
+      68.69,
+      73.78
+     ],
+     "reciprocal_mean_decode_tokens_per_second": 72.73,
+     "host_during_runs": {
+      "mem_used_gib": 105.4,
+      "mem_available_gib": 19.5,
+      "swap_in_kib_s_mean": 16,
+      "swap_in_kib_s_max": 66,
+      "gpu0_peak_mib": 23050,
+      "gpu1_peak_mib": 23042,
+      "gpu2_peak_mib": 14740
+     }
+    },
+    "long": {
+     "protocol": "131072+2048 x2, no warmup",
+     "raw_report": "raw/F3-long.json.gz",
+     "raw_json_sha256": "33df9c7e3724467c603cefe25d4726dab360db2f7f891e1b46ef77736e32601b",
+     "valid_measured_runs": 0
+    }
+   }
+  },
+  {
+   "id": "F4",
+   "label": "fast-256k bundle, 12,288-token chunks, QWEN38_EMBED_UVA=1, hot72",
+   "ple_gpu": true,
+   "chunk": 12288,
+   "hot": 72,
+   "embed_uva": true,
+   "fast": true,
+   "swap": "64 GB + 3.5 GB",
+   "outcome": "CUDA out of memory in the first 12,288-token chunk of the 131K request (240 MiB requested, 117 MiB free); short shape completed",
+   "shapes": {
+    "short": {
+     "protocol": "128+256 x10, 1 warmup",
+     "raw_report": "raw/F4-short.json.gz",
+     "raw_json_sha256": "49fdbc87ba321c1b9a7bf071fccd985d88d54c03058e6ad2313855bc264028c8",
+     "valid_measured_runs": 10,
+     "ttft_seconds": [
+      0.773,
+      0.772,
+      0.765,
+      0.772,
+      0.734,
+      0.776,
+      0.773,
+      0.773,
+      0.777,
+      0.77
+     ],
+     "input_tokens_per_ttft_second": [
+      165.6,
+      165.8,
+      167.2,
+      165.7,
+      174.4,
+      165.0,
+      165.7,
+      165.5,
+      164.8,
+      166.3
+     ],
+     "api_observed_decode_tokens_per_second": [
+      70.37,
+      71.8,
+      68.28,
+      67.94,
+      68.27,
+      68.2,
+      68.12,
+      70.12,
+      70.05,
+      69.21
+     ],
+     "reciprocal_mean_decode_tokens_per_second": 69.21,
+     "host_during_runs": {
+      "mem_used_gib": 104.5,
+      "mem_available_gib": 20.4,
+      "swap_in_kib_s_mean": 44,
+      "swap_in_kib_s_max": 98,
+      "gpu0_peak_mib": 22730,
+      "gpu1_peak_mib": 22722,
+      "gpu2_peak_mib": 14740
+     }
+    },
+    "long": {
+     "protocol": "131072+2048 x2, no warmup",
+     "raw_report": "raw/F4-long.json.gz",
+     "raw_json_sha256": "7c7f2cd5c3e79f420bc526c0d2a1d6e3269189cc3c1f45e3c4df06ba2eab975b",
+     "valid_measured_runs": 0
+    }
+   }
+  },
+  {
+   "id": "F5",
+   "label": "configs/fast-256k-prefill.env: fast-256k bundle, 8,192-token chunks, QWEN38_EMBED_UVA=1, hot76",
+   "ple_gpu": true,
+   "chunk": 8192,
+   "hot": 76,
+   "embed_uva": true,
+   "fast": true,
+   "swap": "64 GB + 3.5 GB",
+   "shapes": {
+    "short": {
+     "protocol": "128+256 x10, 1 warmup",
+     "raw_report": "raw/F5-short.json.gz",
+     "raw_json_sha256": "f24b8a52f2b417d52998af24f4752434fce076c5d9862d546adbe5adae1c1088",
+     "valid_measured_runs": 10,
+     "ttft_seconds": [
+      0.715,
+      0.758,
+      0.754,
+      0.756,
+      0.746,
+      0.741,
+      0.746,
+      0.737,
+      0.755,
+      0.749
+     ],
+     "input_tokens_per_ttft_second": [
+      179.0,
+      168.8,
+      169.7,
+      169.2,
+      171.6,
+      172.8,
+      171.5,
+      173.7,
+      169.6,
+      170.9
+     ],
+     "api_observed_decode_tokens_per_second": [
+      73.55,
+      69.92,
+      73.22,
+      70.25,
+      72.27,
+      71.1,
+      73.1,
+      70.32,
+      69.96,
+      69.77
+     ],
+     "reciprocal_mean_decode_tokens_per_second": 71.32,
+     "host_during_runs": {
+      "mem_used_gib": 104.8,
+      "mem_available_gib": 20.2,
+      "swap_in_kib_s_mean": 45,
+      "swap_in_kib_s_max": 130,
+      "gpu0_peak_mib": 22570,
+      "gpu1_peak_mib": 22562,
+      "gpu2_peak_mib": 14740
+     }
+    },
+    "long": {
+     "protocol": "131072+2048 x2, no warmup",
+     "raw_report": "raw/F5-long.json.gz",
+     "raw_json_sha256": "8be4aafa4248d6ec4d80411e2b3d0dfdbec6b045772b090d4407fc755476c09f",
+     "valid_measured_runs": 2,
+     "ttft_seconds": [
+      32.97,
+      31.236
+     ],
+     "input_tokens_per_ttft_second": [
+      3975.5,
+      4196.2
+     ],
+     "api_observed_decode_tokens_per_second": [
+      73.35,
+      70.74
+     ],
+     "reciprocal_mean_decode_tokens_per_second": 72.02,
+     "host_during_runs": {
+      "mem_used_gib": 104.7,
+      "mem_available_gib": 20.2,
+      "swap_in_kib_s_mean": 9,
+      "swap_in_kib_s_max": 40,
+      "gpu0_peak_mib": 23610,
+      "gpu1_peak_mib": 23602,
+      "gpu2_peak_mib": 14782
+     },
+     "preemptions_total": 0
+    },
+    "boundary": {
+     "protocol": "262016+128 x1",
+     "raw_report": "raw/F5-boundary.json.gz",
+     "raw_json_sha256": "e1fd9eaab1cefa028b9e7f5fccac4f4399ac383a94e78c3259f473883bb1ffc4",
+     "valid_measured_runs": 1,
+     "ttft_seconds": [
+      63.182
+     ],
+     "input_tokens_per_ttft_second": [
+      4147.0
+     ],
+     "api_observed_decode_tokens_per_second": [
+      81.39
+     ],
+     "reciprocal_mean_decode_tokens_per_second": 81.39,
+     "host_during_runs": {
+      "mem_used_gib": 104.8,
+      "mem_available_gib": 20.1,
+      "swap_in_kib_s_mean": 397,
+      "swap_in_kib_s_max": 1794,
+      "gpu0_peak_mib": 23610,
+      "gpu1_peak_mib": 23602,
+      "gpu2_peak_mib": 14782
+     },
+     "preemptions_total": 0
+    }
+   }
+  }
+ ],
+ "quality_check": "raw/quality-check.json: baseline vs F5 on fixed-text prompt logprobs and eight checkable greedy prompts; no systematic difference (see README)"
+}

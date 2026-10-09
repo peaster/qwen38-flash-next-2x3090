@@ -16,6 +16,7 @@ import vllm.envs as envs
 from vllm import ir
 from vllm.config import CacheConfig, ModelConfig, VllmConfig, get_current_vllm_config
 from vllm.forward_context import get_forward_context
+from vllm.logger import init_logger
 from vllm.model_executor.layers.linear import ReplicatedLinear
 from vllm.model_executor.layers.mamba.abstract import MambaBase
 from vllm.model_executor.layers.mamba.mamba_utils import (
@@ -58,6 +59,8 @@ from vllm.v1.attention.backends.utils import NULL_BLOCK_ID
 
 from . import abliteration
 from ..common.ple import copy_ple_embedding_shard_
+
+logger = init_logger(__name__)
 
 _MASK64 = (1 << 64) - 1
 _SPLITMIX_GAMMA = 0x9E3779B97F4A7C15
@@ -324,6 +327,145 @@ class _PleMmapTable:
             out_u8.index_copy_(0, order[a:b], self.views[s].index_select(0, local_sorted[a:b]))
 
 
+def _ple_gpu_device() -> str:
+    """``GPU-<uuid>`` (or index) of a third GPU that holds the PLE table in the offload process."""
+    return os.environ.get("QWEN38_PLE_GPU", "").strip()
+
+
+def _ple_gpu_enabled() -> bool:
+    return bool(_ple_gpu_device()) and is_offload_process()
+
+
+def _ple_checkpoint_dir() -> str:
+    override = os.environ.get("QWEN38_PLE_MMAP_DIR")
+    if override:
+        return override
+    try:
+        return get_current_vllm_config().model_config.model
+    except Exception:  # noqa: BLE001 - only used for the optional self-check
+        return "/model"
+
+
+class _PleGpuTable:
+    """The PLE n-gram table owned by a GPU that is not one of the TP ranks (QWEN38_PLE_GPU).
+
+    The first ``gpu_shards`` checkpoint shards are resident in that GPU's memory. The remaining
+    shards live once in exact-size pinned host memory that the same GPU reads through UVA. Both
+    parts are contiguous row ranges, so a lookup is two ``index_select`` calls. The GPU workers
+    are unchanged: they keep receiving FP8 rows through the shared host output buffers, which the
+    offload process fills here with one device-to-host copy per layer call.
+    """
+
+    def __init__(self, num_shards: int, shard_rows: int, total_rows: int, head_dim: int) -> None:
+        if not torch.cuda.is_available() or torch.cuda.device_count() != 1:
+            raise RuntimeError(
+                "QWEN38_PLE_GPU needs exactly one visible CUDA device in the PLE offload process, "
+                f"found {torch.cuda.device_count()}")
+        self.device = torch.device("cuda", 0)
+        torch.cuda.set_device(self.device)
+        self.num_shards = num_shards
+        self.shard_rows = shard_rows
+        self.total_rows = total_rows
+        self.head_dim = head_dim
+        shard_bytes = shard_rows * head_dim
+        free_bytes, _ = torch.cuda.mem_get_info(self.device)
+        reserve = int(float(os.environ.get("QWEN38_PLE_GPU_RESERVE_GIB", "1")) * 2**30)
+        requested = os.environ.get("QWEN38_PLE_GPU_SHARDS", "").strip()
+        gpu_shards = int(requested) if requested else max(0, (free_bytes - reserve) // shard_bytes)
+        self.gpu_shards = min(gpu_shards, num_shards)
+        self.hot_rows = min(total_rows, self.gpu_shards * shard_rows)
+        cold_rows = total_rows - self.hot_rows
+        self.hot = torch.empty((self.hot_rows, head_dim), dtype=torch.uint8, device=self.device)
+        self.cold_host: torch.Tensor | None = None
+        self.cold: torch.Tensor | None = None
+        if cold_rows:
+            from vllm.model_executor.offloader.exact_pinned import extension
+            from vllm.utils.torch_utils import get_accelerator_view_from_cpu_tensor
+            # Untouched anonymous pages cost no RSS; the exact-size allocator copies them into one
+            # cudaHostAlloc block (the caching host allocator would round 33 GiB up to 64 GiB) and
+            # the shards overwrite it below.
+            staging = torch.empty((cold_rows, head_dim), dtype=torch.uint8)
+            self.cold_host = extension().allocate_copy(staging)
+            del staging
+            if not self.cold_host.is_pinned():
+                raise RuntimeError("QWEN38_PLE_GPU: the cold PLE shards must be pinned for UVA reads")
+            self.cold = get_accelerator_view_from_cpu_tensor(self.cold_host)
+        self.filled = [False] * num_shards
+        self.ready = False
+        self._out: torch.Tensor | None = None
+        self.verify_remaining = int(os.environ.get("QWEN38_PLE_GPU_VERIFY", "0"))
+        logger.info(
+            "PLE table on %s: %d of %d shards (%.2f GiB) in GPU memory, %d shards (%.2f GiB) in "
+            "pinned host memory read through UVA; %.2f GiB of GPU memory was free.",
+            torch.cuda.get_device_name(self.device), self.gpu_shards, num_shards,
+            self.hot_rows * head_dim / 2**30, num_shards - self.gpu_shards,
+            cold_rows * head_dim / 2**30, free_bytes / 2**30)
+
+    def copy_shard(self, shard: int, rows: torch.Tensor) -> None:
+        """Store checkpoint shard ``shard`` (FP8 rows as loaded) in its hot or cold slot."""
+        start = shard * self.shard_rows
+        end = start + rows.shape[0]
+        if rows.dim() != 2 or rows.shape[1] != self.head_dim or end > self.total_rows:
+            raise ValueError(f"unexpected PLE shard {shard} of shape {tuple(rows.shape)}")
+        source = rows.contiguous().view(torch.uint8)
+        if end <= self.hot_rows:
+            self.hot[start:end].copy_(source)
+        elif start >= self.hot_rows:
+            assert self.cold_host is not None
+            self.cold_host[start - self.hot_rows:end - self.hot_rows].copy_(source)
+        else:
+            raise ValueError("a PLE shard must not straddle the hot/cold boundary")
+        self.filled[shard] = True
+
+    def check_ready(self) -> None:
+        if self.ready:
+            return
+        missing = [index for index, done in enumerate(self.filled) if not done]
+        if missing:
+            raise RuntimeError(f"PLE GPU table is missing {len(missing)} shard(s): {missing[:8]}")
+        torch.cuda.synchronize(self.device)
+        self.ready = True
+
+    def gather(self, ids: torch.Tensor) -> torch.Tensor:
+        """Return ``table[ids]`` as uint8 rows on the device; ``ids`` are int64 row coordinates."""
+        count = ids.numel()
+        if self._out is None or self._out.shape[0] < count:
+            self._out = torch.empty((max(count, 1 << 16), self.head_dim), dtype=torch.uint8,
+                                    device=self.device)
+        out = self._out[:count]
+        if self.cold is None:
+            torch.index_select(self.hot, 0, ids, out=out)
+            return out
+        if self.hot_rows == 0:
+            torch.index_select(self.cold, 0, ids, out=out)
+            return out
+        if count <= 1024:
+            # Decode-sized lookups: two unmasked gathers and a select, no host synchronization.
+            hot_part = self.hot.index_select(0, ids.clamp(max=self.hot_rows - 1))
+            cold_part = self.cold.index_select(0, (ids - self.hot_rows).clamp(min=0))
+            torch.where((ids < self.hot_rows).unsqueeze(1), hot_part, cold_part, out=out)
+            return out
+        is_hot = ids < self.hot_rows
+        hot_index = is_hot.nonzero().squeeze(1)
+        cold_index = (~is_hot).nonzero().squeeze(1)
+        if hot_index.numel():
+            out.index_copy_(0, hot_index, self.hot.index_select(0, ids[hot_index]))
+        if cold_index.numel():
+            out.index_copy_(0, cold_index, self.cold.index_select(0, ids[cold_index] - self.hot_rows))
+        return out
+
+    def lookup(self, ids: torch.Tensor, num_tokens: int, embedding_dim: int,
+               output_buffer: torch.Tensor | None) -> torch.Tensor:
+        """Gather on the device and copy the FP8 rows into the (shared) CPU output."""
+        rows = self.gather(ids.reshape(-1))
+        if output_buffer is not None:
+            output = output_buffer[:num_tokens, :embedding_dim]
+        else:
+            output = torch.empty((num_tokens, embedding_dim), dtype=torch.float8_e4m3fn)
+        output.view(torch.uint8).reshape(-1, self.head_dim).copy_(rows)
+        return output
+
+
 class Qwen3_8FlashNextNGramEmbedding(PleOffloadLayer):
     def __init__(
         self,
@@ -394,7 +536,9 @@ class Qwen3_8FlashNextNGramEmbedding(PleOffloadLayer):
         divisor = int(config.make_ngram_vocab_size_divisible_by)
         padded_vocab_size = ((offset + divisor - 1) // divisor) * divisor
         self._ple_mmap = None
-        emb_device = torch.device("meta") if _ple_mmap_enabled() else None
+        self._ple_gpu: _PleGpuTable | None = None
+        self._ple_model_dir: str | None = None
+        emb_device = torch.device("meta") if (_ple_mmap_enabled() or _ple_gpu_enabled()) else None
         with (emb_device if emb_device is not None else contextlib.nullcontext()):
             self.ngram_embedding = VocabParallelEmbedding(
                 padded_vocab_size,
@@ -467,19 +611,78 @@ class Qwen3_8FlashNextNGramEmbedding(PleOffloadLayer):
         output_buffer: torch.Tensor | None = None,
     ) -> torch.Tensor:
         del hidden_states
+        if self._ple_gpu is not None and input_ids.device.type != "cuda":
+            return self._ple_gpu_forward(input_ids, query_start_loc, ngram_context, output_buffer)
+        return self._table_forward(input_ids, query_start_loc, ngram_context, output_buffer)
+
+    def _hash_buffers(self, device: torch.device) -> tuple[torch.Tensor, ...]:
+        """The hash constants and pack workspaces on ``device`` (the module's own when it matches)."""
+        buffers = (self.positions_buffer, self.padded_buffer, self.layer_multipliers,
+                   self.ngram_heads_vocab_sizes, self.ngram_heads_offsets)
+        if device == buffers[0].device:
+            return buffers
+        cached = getattr(self, "_ple_device_buffers", None)
+        if cached is None or cached[0].device != device:
+            cached = tuple(buffer.to(device) for buffer in buffers)
+            self._ple_device_buffers = cached
+        return cached
+
+    def _ple_gpu_forward(
+        self,
+        input_ids: torch.Tensor,
+        query_start_loc: torch.Tensor,
+        ngram_context: torch.Tensor,
+        output_buffer: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """Hash and gather on the PLE GPU; the result lands in the shared CPU output buffer."""
+        table = self._ple_gpu
+        assert table is not None
+        if not table.ready:
+            table.check_ready()
+            if table.verify_remaining > 0 and self._ple_mmap is None:
+                embedding = self.ngram_embedding
+                shard_rows = (embedding.org_vocab_size + self.split_ngram_parts - 1) // self.split_ngram_parts
+                self._ple_mmap = _PleMmapTable(self._ple_model_dir or _ple_checkpoint_dir(),
+                                               self.split_ngram_parts, shard_rows, embedding.embedding_dim)
+        device = table.device
+        output = self._table_forward(
+            input_ids.to(device), query_start_loc.to(device),
+            ngram_context.to(device) if ngram_context is not None else None, output_buffer)
+        if table.verify_remaining > 0:
+            # Self-check: the same code on the CPU, gathering from the checkpoint files.
+            reference = self._table_forward(input_ids, query_start_loc, ngram_context, None)
+            same = torch.equal(output.view(torch.uint8), reference.view(torch.uint8))
+            table.verify_remaining -= 1
+            logger.info("PLE GPU lookup self-check (%d tokens): %s; %d check(s) left.",
+                        int(output.shape[0]), "match" if same else "MISMATCH", table.verify_remaining)
+            if not same:
+                raise RuntimeError("PLE GPU lookup differs from the checkpoint rows")
+            if table.verify_remaining == 0:
+                self._ple_mmap = None
+        return output
+
+    def _table_forward(
+        self,
+        input_ids: torch.Tensor,
+        query_start_loc: torch.Tensor,
+        ngram_context: torch.Tensor,
+        output_buffer: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         input_ids = input_ids.reshape(-1).long()
         query_start_loc = query_start_loc.long()
+        (positions_buffer, padded_buffer, layer_multipliers,
+         ngram_heads_vocab_sizes, ngram_heads_offsets) = self._hash_buffers(input_ids.device)
         num_reqs = query_start_loc.numel() - 1
         num_tokens = input_ids.shape[0]
-        if num_tokens > self.positions_buffer.numel():
+        if num_tokens > positions_buffer.numel():
             raise ValueError(
                 f"PLE received {num_tokens} tokens, but its workspace supports "
-                f"at most {self.positions_buffer.numel()}"
+                f"at most {positions_buffer.numel()}"
             )
-        if num_reqs > self.padded_buffer.shape[0]:
+        if num_reqs > padded_buffer.shape[0]:
             raise ValueError(
                 f"PLE received {num_reqs} requests, but its workspace supports "
-                f"at most {self.padded_buffer.shape[0]}"
+                f"at most {padded_buffer.shape[0]}"
             )
 
         # The CPU-offload subprocess is never captured by a CUDA Graph, so its
@@ -497,11 +700,11 @@ class Qwen3_8FlashNextNGramEmbedding(PleOffloadLayer):
             # scatter: its clamped indices would overwrite the last real token.
             num_valid_tokens = min(int(query_start_loc[-1].item()), num_tokens)
         else:
-            max_seq_len = self.padded_buffer.shape[1]
+            max_seq_len = padded_buffer.shape[1]
             num_valid_tokens = num_tokens
 
-        positions = self.positions_buffer[:num_tokens]
-        packed = self.padded_buffer[:num_reqs, :max_seq_len]
+        positions = positions_buffer[:num_tokens]
+        packed = padded_buffer[:num_reqs, :max_seq_len]
         packed.fill_(self.eos_token_id)
         request_indices = torch.searchsorted(query_start_loc, positions, right=True) - 1
         request_indices.clamp_(max=num_reqs - 1)
@@ -535,16 +738,18 @@ class Qwen3_8FlashNextNGramEmbedding(PleOffloadLayer):
         for ngram in range(2, self.ngram_size + 1):
             start = (ngram - 2) * self.heads_per_ngram
             end = start + self.heads_per_ngram
-            mixed = shifted[0] * self.layer_multipliers[0]
+            mixed = shifted[0] * layer_multipliers[0]
             for index in range(1, ngram):
                 mixed = torch.bitwise_xor(
-                    mixed, shifted[index] * self.layer_multipliers[index]
+                    mixed, shifted[index] * layer_multipliers[index]
                 )
-            sizes = self.ngram_heads_vocab_sizes[start:end]
-            offsets = self.ngram_heads_offsets[start:end]
+            sizes = ngram_heads_vocab_sizes[start:end]
+            offsets = ngram_heads_offsets[start:end]
             ids = torch.remainder(mixed.unsqueeze(-1), sizes) + offsets
             id_blocks.append(ids[request_indices, adjusted_columns])
         ngram_ids = torch.cat(id_blocks, dim=-1)
+        if self._ple_gpu is not None and ngram_ids.device.type == "cuda":
+            return self._ple_gpu.lookup(ngram_ids, num_tokens, self.embedding_dim, output_buffer)
         if self._ple_mmap is not None:
             if output_buffer is not None:
                 output = output_buffer[:num_tokens, : self.embedding_dim]
@@ -642,6 +847,16 @@ class Qwen3_8FlashNextNGramEmbedding(PleOffloadLayer):
                         f"expected {expected_shape}, got "
                         f"{tuple(loaded_weight.shape)}"
                     )
+                if _ple_gpu_enabled():
+                    if embedding.shard_indices.org_vocab_start_index != 0:
+                        raise RuntimeError("QWEN38_PLE_GPU requires an unsharded table")
+                    if self._ple_gpu is None:
+                        self._ple_gpu = _PleGpuTable(self.split_ngram_parts, shard_size,
+                                                     embedding.org_vocab_size, embedding.embedding_dim)
+                        self._ple_model_dir = _ple_checkpoint_dir()
+                    self._ple_gpu.copy_shard(shard_index, loaded_weight)
+                    loaded.add("ngram_embedding.weight")
+                    continue
                 if _ple_mmap_enabled():
                     if embedding.shard_indices.org_vocab_start_index != 0:
                         raise RuntimeError("PLE mmap requires an unsharded table")
