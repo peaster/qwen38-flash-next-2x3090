@@ -1,0 +1,505 @@
+{
+  "date": "2026-10-25",
+  "hardware": "2x RTX 3090 24 GB on CPU root ports at PCIe 4.0 x8 each (NVLink bridge, CUDA P2P OK) + RTX 5060 Ti 16 GB holding the PLE table (configs/ple-gpu.env); AMD Ryzen 9 7950X3D; 124 GiB RAM; 64 GB + 3.5 GB swap",
+  "image": "qwen38-flash-next-2x3090:locked, local build of this tree's docker/Dockerfile: sha256:90e6752a48f90582aeb8c1c44432025031ba4fbc9d8c60353abd4e28fd8465f0 (not a published image)",
+  "host_software": {
+    "driver": "615.78.08",
+    "kernel": "7.2.11-arch1-1",
+    "docker": "29.9.2",
+    "nvidia_container_toolkit": "1.20.1"
+  },
+  "client": "research client around scripts/benchmark_serving.measure_run (exact token accounting, unique cache salt per request, greedy); API-observed TTFT and decode estimate; per-request MTP acceptance and preemptions from /metrics deltas; outputs not captured",
+  "order": "one session each, in the order 256k, f5, 128k, same day; persistent JIT caches warm except where noted",
+  "heldout_prompts": [
+    "Design a PostgreSQL schema for a bike-sharing service (stations, bikes, riders, trips, maintenance). Write the DDL with constraints and indexes, then ten analytical queries with window functions, and explain the query plan you expect for the two most expensive ones.",
+    "Derive the period of a simple pendulum for large amplitudes using elliptic integrals, then compare it numerically with the small-angle approximation for amplitudes of 10, 45, 90 and 170 degrees.",
+    "Plan a week of vegetarian dinners for a family of four on a modest budget. For each day give a recipe with quantities, preparation steps, and a shopping list grouped by store section.",
+    "Write a Rust command-line tool that deduplicates files in a directory tree by content hash, using rayon for parallel hashing. Include error handling, unit tests and a short README.",
+    "Explain the causes and consequences of the 1848 revolutions in Europe, country by country, and discuss why most of them failed in the short term.",
+    "Write a sequence of twelve short poems, one for each month, about a small mountain village, each in a different poetic form, with a one-line note naming the form."
+  ],
+  "decode_prompts": [
+    "repo-chat, 128 input tokens",
+    "Implement a persistent (immutable) red-black tree in Python with insert, delete and in-order iteration. Include type hints, docstrings and a pytest test suite with property-based tests.",
+    "Explain how TCP congestion control works. Compare Reno, CUBIC and BBR, including how each reacts to packet loss and to bufferbloat, and when you would choose each."
+  ],
+  "configurations": [
+    {
+      "id": "f5",
+      "label": "control: configs/fast-256k-prefill.env without the two cache-policy lines (released LRU, 76 slots per layer and GPU), same image",
+      "shapes": {
+        "full": {
+          "prompts": "repo-chat",
+          "protocol": "262,016 + 128, 2 measured, no warmup",
+          "raw_report": "raw/f5-full.json.gz",
+          "raw_json_sha256": "c5a5c88304a83c30ced498dce22c7bf53715e37a20b1b31be827737fe584a9f2",
+          "valid_measured_runs": 2,
+          "requests": [
+            {
+              "input_tokens": 262016,
+              "output_tokens": 128,
+              "ttft_seconds": 65.87,
+              "input_tokens_per_ttft_second": 3978.0,
+              "decode_tokens_per_second": 56.21,
+              "mtp_acceptance": 0.588,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 262016,
+              "output_tokens": 128,
+              "ttft_seconds": 63.22,
+              "input_tokens_per_ttft_second": 4145.0,
+              "decode_tokens_per_second": 78.34,
+              "mtp_acceptance": 0.626,
+              "preemptions": 0
+            }
+          ],
+          "decode_reciprocal_mean_tpot": 65.46
+        },
+        "long": {
+          "prompts": "repo-chat",
+          "protocol": "131,072 + 2,048, 2 measured, no warmup",
+          "raw_report": "raw/f5-long.json.gz",
+          "raw_json_sha256": "18567e9c64b285383184a4db05cd9b1bd55492e198b76676bb18a2de1d7a5775",
+          "valid_measured_runs": 2,
+          "requests": [
+            {
+              "input_tokens": 131072,
+              "output_tokens": 2048,
+              "ttft_seconds": 31.34,
+              "input_tokens_per_ttft_second": 4182.0,
+              "decode_tokens_per_second": 74.38,
+              "mtp_acceptance": 0.535,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 131072,
+              "output_tokens": 2048,
+              "ttft_seconds": 31.37,
+              "input_tokens_per_ttft_second": 4178.0,
+              "decode_tokens_per_second": 72.23,
+              "mtp_acceptance": 0.555,
+              "preemptions": 0
+            }
+          ],
+          "decode_reciprocal_mean_tpot": 73.29
+        },
+        "decode": {
+          "prompts": "repo-chat 128 + 2,048, two chat prompts + 1,536",
+          "protocol": "1 pass of 3 prompts",
+          "raw_report": "raw/f5-decode.json.gz",
+          "raw_json_sha256": "9fc0fd1b7c56e09c9d4c93c8c06f99b5a9fce69e5a1e84c9fb1f8f072927308f",
+          "valid_measured_runs": 3,
+          "requests": [
+            {
+              "input_tokens": 128,
+              "output_tokens": 2048,
+              "ttft_seconds": 1.85,
+              "input_tokens_per_ttft_second": 69.0,
+              "decode_tokens_per_second": 69.82,
+              "mtp_acceptance": 0.473,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 88,
+              "output_tokens": 1536,
+              "ttft_seconds": 1.39,
+              "input_tokens_per_ttft_second": 63.0,
+              "decode_tokens_per_second": 68.65,
+              "mtp_acceptance": 0.467,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 90,
+              "output_tokens": 1536,
+              "ttft_seconds": 0.93,
+              "input_tokens_per_ttft_second": 97.0,
+              "decode_tokens_per_second": 66.24,
+              "mtp_acceptance": 0.392,
+              "preemptions": 0
+            }
+          ],
+          "decode_reciprocal_mean_tpot": 68.2
+        },
+        "heldout": {
+          "prompts": "six chat prompts + 1,536 (not used to fit the cache policies)",
+          "protocol": "1 pass of 6 prompts",
+          "raw_report": "raw/f5-heldout.json.gz",
+          "raw_json_sha256": "88937d700b1bc686a141bab302eff182c7b956e458bf18d5cd63c264aee53f57",
+          "valid_measured_runs": 6,
+          "requests": [
+            {
+              "input_tokens": 103,
+              "output_tokens": 1536,
+              "ttft_seconds": 1.01,
+              "input_tokens_per_ttft_second": 102.0,
+              "decode_tokens_per_second": 65.88,
+              "mtp_acceptance": 0.466,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 105,
+              "output_tokens": 1536,
+              "ttft_seconds": 0.96,
+              "input_tokens_per_ttft_second": 110.0,
+              "decode_tokens_per_second": 81.65,
+              "mtp_acceptance": 0.731,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 89,
+              "output_tokens": 1536,
+              "ttft_seconds": 0.96,
+              "input_tokens_per_ttft_second": 93.0,
+              "decode_tokens_per_second": 81.74,
+              "mtp_acceptance": 0.528,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 87,
+              "output_tokens": 1536,
+              "ttft_seconds": 0.87,
+              "input_tokens_per_ttft_second": 100.0,
+              "decode_tokens_per_second": 79.09,
+              "mtp_acceptance": 0.595,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 85,
+              "output_tokens": 1536,
+              "ttft_seconds": 0.96,
+              "input_tokens_per_ttft_second": 88.0,
+              "decode_tokens_per_second": 70.12,
+              "mtp_acceptance": 0.419,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 87,
+              "output_tokens": 1536,
+              "ttft_seconds": 0.92,
+              "input_tokens_per_ttft_second": 95.0,
+              "decode_tokens_per_second": 69.04,
+              "mtp_acceptance": 0.541,
+              "preemptions": 0
+            }
+          ],
+          "decode_reciprocal_mean_tpot": 74.03
+        }
+      }
+    },
+    {
+      "id": "256k",
+      "label": "configs/fast-256k-prefill.env as checked in: LRFU lambda 0.95 + per-layer sizes, 76 slots per layer and GPU on average",
+      "shapes": {
+        "full": {
+          "prompts": "repo-chat",
+          "protocol": "262,016 + 128, 2 measured, no warmup",
+          "raw_report": "raw/256k-full.json.gz",
+          "raw_json_sha256": "8791fd3df40f4cbae636398c5c54d46aab6afdcc7dc40d07bfb47fe92ec201cb",
+          "valid_measured_runs": 2,
+          "requests": [
+            {
+              "input_tokens": 262016,
+              "output_tokens": 128,
+              "ttft_seconds": 66.03,
+              "input_tokens_per_ttft_second": 3968.0,
+              "decode_tokens_per_second": 77.28,
+              "mtp_acceptance": 0.596,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 262016,
+              "output_tokens": 128,
+              "ttft_seconds": 63.04,
+              "input_tokens_per_ttft_second": 4157.0,
+              "decode_tokens_per_second": 82.95,
+              "mtp_acceptance": 0.609,
+              "preemptions": 0
+            }
+          ],
+          "decode_reciprocal_mean_tpot": 80.02
+        },
+        "long": {
+          "prompts": "repo-chat",
+          "protocol": "131,072 + 2,048, 2 measured, no warmup",
+          "raw_report": "raw/256k-long.json.gz",
+          "raw_json_sha256": "fab58b97e5b9f0d2d23fa57957dd12cb007df565a4ffa9f2a532d0f714a50273",
+          "valid_measured_runs": 2,
+          "requests": [
+            {
+              "input_tokens": 131072,
+              "output_tokens": 2048,
+              "ttft_seconds": 31.22,
+              "input_tokens_per_ttft_second": 4198.0,
+              "decode_tokens_per_second": 83.69,
+              "mtp_acceptance": 0.573,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 131072,
+              "output_tokens": 2048,
+              "ttft_seconds": 31.21,
+              "input_tokens_per_ttft_second": 4200.0,
+              "decode_tokens_per_second": 77.46,
+              "mtp_acceptance": 0.596,
+              "preemptions": 0
+            }
+          ],
+          "decode_reciprocal_mean_tpot": 80.45
+        },
+        "decode": {
+          "prompts": "repo-chat 128 + 2,048, two chat prompts + 1,536",
+          "protocol": "1 pass of 3 prompts",
+          "raw_report": "raw/256k-decode.json.gz",
+          "raw_json_sha256": "c12fce08229895a8f0573da8957fc3161c8de8178ccd6063b4407d79486fd9a5",
+          "valid_measured_runs": 3,
+          "requests": [
+            {
+              "input_tokens": 128,
+              "output_tokens": 2048,
+              "ttft_seconds": 4.81,
+              "input_tokens_per_ttft_second": 27.0,
+              "decode_tokens_per_second": 77.73,
+              "mtp_acceptance": 0.506,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 88,
+              "output_tokens": 1536,
+              "ttft_seconds": 1.41,
+              "input_tokens_per_ttft_second": 62.0,
+              "decode_tokens_per_second": 78.36,
+              "mtp_acceptance": 0.514,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 90,
+              "output_tokens": 1536,
+              "ttft_seconds": 0.99,
+              "input_tokens_per_ttft_second": 91.0,
+              "decode_tokens_per_second": 68.48,
+              "mtp_acceptance": 0.42,
+              "preemptions": 0
+            }
+          ],
+          "decode_reciprocal_mean_tpot": 74.57
+        },
+        "heldout": {
+          "prompts": "six chat prompts + 1,536 (not used to fit the cache policies)",
+          "protocol": "1 pass of 6 prompts",
+          "raw_report": "raw/256k-heldout.json.gz",
+          "raw_json_sha256": "33808211d0ff2c80822090809e7900f531fe041467837fd16f3a58f38ef08d73",
+          "valid_measured_runs": 6,
+          "requests": [
+            {
+              "input_tokens": 103,
+              "output_tokens": 1536,
+              "ttft_seconds": 0.98,
+              "input_tokens_per_ttft_second": 105.0,
+              "decode_tokens_per_second": 70.97,
+              "mtp_acceptance": 0.462,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 105,
+              "output_tokens": 1536,
+              "ttft_seconds": 0.88,
+              "input_tokens_per_ttft_second": 120.0,
+              "decode_tokens_per_second": 87.81,
+              "mtp_acceptance": 0.685,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 89,
+              "output_tokens": 1536,
+              "ttft_seconds": 0.94,
+              "input_tokens_per_ttft_second": 95.0,
+              "decode_tokens_per_second": 77.4,
+              "mtp_acceptance": 0.462,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 87,
+              "output_tokens": 1536,
+              "ttft_seconds": 0.94,
+              "input_tokens_per_ttft_second": 93.0,
+              "decode_tokens_per_second": 85.04,
+              "mtp_acceptance": 0.618,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 85,
+              "output_tokens": 1536,
+              "ttft_seconds": 0.94,
+              "input_tokens_per_ttft_second": 90.0,
+              "decode_tokens_per_second": 76.87,
+              "mtp_acceptance": 0.404,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 87,
+              "output_tokens": 1536,
+              "ttft_seconds": 0.85,
+              "input_tokens_per_ttft_second": 102.0,
+              "decode_tokens_per_second": 75.78,
+              "mtp_acceptance": 0.538,
+              "preemptions": 0
+            }
+          ],
+          "decode_reciprocal_mean_tpot": 78.57
+        }
+      }
+    },
+    {
+      "id": "128k",
+      "label": "configs/fast-128k-prefill.env on top of it: 135,168-token window, 2.5 GB KV, 92 slots on average, LRFU + per-layer sizes",
+      "shapes": {
+        "long": {
+          "prompts": "repo-chat",
+          "protocol": "131,072 + 2,048, 2 measured, no warmup",
+          "raw_report": "raw/128k-long.json.gz",
+          "raw_json_sha256": "3916ec54af69bfa4abc517fcdf66ea872489cf0f15d6ee54d6a670f7cb69a446",
+          "valid_measured_runs": 2,
+          "requests": [
+            {
+              "input_tokens": 131072,
+              "output_tokens": 2048,
+              "ttft_seconds": 32.92,
+              "input_tokens_per_ttft_second": 3981.0,
+              "decode_tokens_per_second": 86.42,
+              "mtp_acceptance": 0.522,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 131072,
+              "output_tokens": 2048,
+              "ttft_seconds": 30.19,
+              "input_tokens_per_ttft_second": 4342.0,
+              "decode_tokens_per_second": 87.48,
+              "mtp_acceptance": 0.544,
+              "preemptions": 0
+            }
+          ],
+          "decode_reciprocal_mean_tpot": 86.95
+        },
+        "decode": {
+          "prompts": "repo-chat 128 + 2,048, two chat prompts + 1,536",
+          "protocol": "1 pass of 3 prompts",
+          "raw_report": "raw/128k-decode.json.gz",
+          "raw_json_sha256": "26cf203c317de27bc7c391f8f6e31894569b8a2fe0cdbda0e77d64f4014529c6",
+          "valid_measured_runs": 3,
+          "requests": [
+            {
+              "input_tokens": 128,
+              "output_tokens": 2048,
+              "ttft_seconds": 5.68,
+              "input_tokens_per_ttft_second": 23.0,
+              "decode_tokens_per_second": 85.32,
+              "mtp_acceptance": 0.478,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 88,
+              "output_tokens": 1536,
+              "ttft_seconds": 1.25,
+              "input_tokens_per_ttft_second": 70.0,
+              "decode_tokens_per_second": 91.02,
+              "mtp_acceptance": 0.582,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 90,
+              "output_tokens": 1536,
+              "ttft_seconds": 0.86,
+              "input_tokens_per_ttft_second": 105.0,
+              "decode_tokens_per_second": 83.43,
+              "mtp_acceptance": 0.403,
+              "preemptions": 0
+            }
+          ],
+          "decode_reciprocal_mean_tpot": 86.47
+        },
+        "heldout": {
+          "prompts": "six chat prompts + 1,536 (not used to fit the cache policies)",
+          "protocol": "1 pass of 6 prompts",
+          "raw_report": "raw/128k-heldout.json.gz",
+          "raw_json_sha256": "5cb22f9df4186c4792671894f4b4a11d1093b477f4b557b10a77c83a0e9cb17d",
+          "valid_measured_runs": 6,
+          "requests": [
+            {
+              "input_tokens": 103,
+              "output_tokens": 1536,
+              "ttft_seconds": 0.89,
+              "input_tokens_per_ttft_second": 116.0,
+              "decode_tokens_per_second": 86.21,
+              "mtp_acceptance": 0.501,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 105,
+              "output_tokens": 1536,
+              "ttft_seconds": 0.85,
+              "input_tokens_per_ttft_second": 124.0,
+              "decode_tokens_per_second": 97.12,
+              "mtp_acceptance": 0.703,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 89,
+              "output_tokens": 1536,
+              "ttft_seconds": 0.83,
+              "input_tokens_per_ttft_second": 107.0,
+              "decode_tokens_per_second": 89.78,
+              "mtp_acceptance": 0.457,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 87,
+              "output_tokens": 1536,
+              "ttft_seconds": 0.89,
+              "input_tokens_per_ttft_second": 98.0,
+              "decode_tokens_per_second": 87.62,
+              "mtp_acceptance": 0.465,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 85,
+              "output_tokens": 1536,
+              "ttft_seconds": 0.89,
+              "input_tokens_per_ttft_second": 95.0,
+              "decode_tokens_per_second": 89.33,
+              "mtp_acceptance": 0.421,
+              "preemptions": 0
+            },
+            {
+              "input_tokens": 87,
+              "output_tokens": 1536,
+              "ttft_seconds": 0.86,
+              "input_tokens_per_ttft_second": 101.0,
+              "decode_tokens_per_second": 89.39,
+              "mtp_acceptance": 0.563,
+              "preemptions": 0
+            }
+          ],
+          "decode_reciprocal_mean_tpot": 89.78
+        }
+      }
+    }
+  ],
+  "mechanism_evidence": {
+    "verify_step_law": "verify-step GPU time = 17.0-17.3 ms + 176-179 us x (expert misses on the slower EP rank, summed over the 48 MoE layers), R^2 >= 0.997, hot 64-96, measured with CUDA events in research sessions",
+    "policy_effect_heldout": "same VRAM (76 slots/layer/GPU), held-out prompts, two LRU sessions vs LRFU / per-layer / both: max-rank misses -6.6% / -7.5% / -14.2%, verify step -2.9% / -4.2% / -7.1%; an offline replay of the LRU session's routing predicted each change within ~2 points",
+    "combined_same_day": "256K profile vs two F5 sessions: misses -12 to -13%, verify step -6%; 128K profile: misses -37 to -40%, verify step -19 to -20%; worst-8K-chunk driver-free memory 321-335 MiB (256K) and 281-295 MiB (128K) versus 193-207 MiB for F5",
+    "kernel_check": "the runtime LRU kernel replayed 44,502 recorded calls: 100.000% of per-call miss counts equal to a reference LRU model with the policies off; 99.95-99.99% with LRFU (ties and float32 keys), including forced key rebasing",
+    "prefill_trims": "reference drops in the PLE forward and the decoder loop: transient per 8K chunk 1,126 -> 868 MiB; greedy tokens identical in 12 comparisons; logprob differences equal to the control's own run-to-run variation (median 0.0076 vs 0.0051 nats, p95 0.77 vs 0.81)"
+  },
+  "rejected": [
+    "hot80 at 256K (trims, uniform): passed 262,016+128 once with ~100 MiB driver-free, then with the policies ran out of memory on a 320 MiB request with 786 MiB reserved but unallocated (allocator fragmentation)",
+    "hot96 at 128K with the policies: out of memory on the same 320 MiB request (MTP draft prefill), 3 MiB driver-free at the first 8K chunk; hot100 at 128K ran out of memory even without the policies"
+  ],
+  "notes": [
+    "One session per configuration; per-request decode varies by about +-10% with MTP acceptance, so compare the reciprocal-mean rates, not single requests.",
+    "Per-layer sizes add 50-170 MiB of non-PyTorch GPU memory (one Humming configuration and kernel set per distinct slot count) and first-start compiles: about 8 minutes of LRU-kernel compilation on an empty JIT cache, 4.8-5.7 s TTFT on the first short request of a session (F5: 1.9 s).",
+    "The first 262,016+128 request of every session, including F5, includes first-use compiles (decode p99 chunk gap 229-256 ms)."
+  ]
+}

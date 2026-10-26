@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import json
+import math
 import os
 import re
 from dataclasses import dataclass, replace
@@ -135,6 +136,47 @@ def _permute_expert_rows_kernel(
     tl.store(output_ptr + new_row * row_size + offsets, values, mask=mask)
 
 
+# LRFU replacement (QWEN38_LRU_LRFU_LAMBDA in (0, 1), off by default). An
+# expert's score sums lambda**(calls since each use); evicting the lowest score
+# sits between LRU (lambda -> 0) and LFU (lambda = 1). With c = -ln(lambda) and
+# t the per-layer call index, key = ln(score) + c*t orders experts exactly like
+# the decayed score at any later time, and a use becomes key = logaddexp(key,
+# c*t). Keys plus LRFU_OFFSET are positive, so their float32 bits sort like
+# integers: slot_ages holds them and victim selection is unchanged. slot_ages
+# has 512 more entries after the slots, one key per global expert, so a score
+# survives eviction (bits 0: never used). The clock counts calls, not ids.
+_LRFU_LAMBDA = float(os.getenv("QWEN38_LRU_LRFU_LAMBDA", "0"))
+if not 0.0 <= _LRFU_LAMBDA < 1.0:
+    raise ValueError("QWEN38_LRU_LRFU_LAMBDA must be in [0, 1)")
+LRFU = tl.constexpr(_LRFU_LAMBDA > 0.0)
+LRFU_C = tl.constexpr(-math.log(_LRFU_LAMBDA) if _LRFU_LAMBDA > 0.0 else 0.0)
+_LRFU_OFFSET = 64.0
+LRFU_OFFSET = tl.constexpr(_LRFU_OFFSET)
+# Keys grow by c per call, so float32 would lose resolution after days of
+# decode. Every LRFU_REBASE calls the clock and all keys drop by the same
+# amount (order kept); keys that would go below zero belong to experts whose
+# score has decayed below e**-64 and become 0 ("never used").
+LRFU_REBASE = tl.constexpr(int(os.getenv("QWEN38_LRU_LRFU_REBASE", str(1 << 16))))
+
+
+@triton.jit
+def _lrfu_touch(bits, t):
+    """Key bits after a use at scaled time ``t`` (``LRFU_C * calls``)."""
+    key = bits.to(tl.float32, bitcast=True) - LRFU_OFFSET
+    hi = tl.maximum(key, t)
+    lo = tl.minimum(key, t)
+    return (hi + tl.log(1.0 + tl.exp(lo - hi)) + LRFU_OFFSET).to(tl.int32, bitcast=True)
+
+
+def lrfu_initial_ages(global_ids: list[int], device) -> torch.Tensor:
+    """Slot keys then per-expert keys; the ranked seed scores (count - slot) * 1e-6 at call 0."""
+    count = len(global_ids)
+    seed = torch.log(torch.arange(count, 0, -1, dtype=torch.float64) * 1e-6) + _LRFU_OFFSET
+    experts = torch.zeros(512, dtype=torch.float64)
+    experts[torch.tensor(global_ids)] = seed
+    return torch.cat([seed, experts]).to(torch.float32).view(torch.int32).to(device)
+
+
 @triton.jit
 def _update_lru_expert_map_kernel(
     global_ids_ptr,
@@ -147,7 +189,7 @@ def _update_lru_expert_map_kernel(
     miss_slots_ptr,
     num_ids: tl.constexpr,
     global_num_experts: tl.constexpr,
-    capacity: tl.constexpr,
+    capacity,
     id_block: tl.constexpr,
     capacity_block: tl.constexpr,
 ):
@@ -193,7 +235,17 @@ def _update_lru_expert_map_kernel(
         victim = tl.argmin(victim_ages, axis=0)
         is_miss = is_local & ~is_hit & ~appeared_before
         assigned_slot = tl.where(is_hit, cache_slot, victim)
-        new_age = clock + request_index + 1
+        if LRFU:
+            # A repeated id in one call counts as one use.
+            touch = is_local & ~appeared_before
+            key_ptr = slot_ages_ptr + capacity + global_safe
+            new_age = _lrfu_touch(
+                tl.load(key_ptr, mask=touch, other=0), clock.to(tl.float32) * LRFU_C
+            )
+            tl.store(key_ptr, new_age, mask=touch)
+            is_hit = is_hit & ~appeared_before
+        else:
+            new_age = clock + request_index + 1
 
         old_global_id = tl.sum(
             tl.where(slot_offsets == victim, slot_global_ids, 0), axis=0
@@ -222,7 +274,10 @@ def _update_lru_expert_map_kernel(
 
     tl.store(slot_global_ids_ptr + slot_offsets, slot_global_ids, mask=valid_slots)
     tl.store(slot_ages_ptr + slot_offsets, slot_ages, mask=valid_slots)
-    tl.store(clock_ptr, clock + num_ids)
+    if LRFU:
+        tl.store(clock_ptr, clock + 1)
+    else:
+        tl.store(clock_ptr, clock + num_ids)
 
 
 @triton.jit
@@ -1359,6 +1414,15 @@ class CompressedTensorsWNA16MoEMethod(CompressedTensorsMoEMethod):
         if match is None:
             return
         layer_id = match.group(1)
+        layer_sizes = os.getenv("QWEN38_HOT_CACHE_LAYER_SIZES")
+        if layer_sizes:
+            # One slot count per target MoE layer, in layer order. Layers miss
+            # at very different rates, so a fixed total serves more requests
+            # when it is not split evenly.
+            sizes = [int(v) for v in layer_sizes.split(",")]
+            if len(sizes) != 48 or not all(16 <= v <= 128 for v in sizes):
+                raise ValueError("QWEN38_HOT_CACHE_LAYER_SIZES needs 48 sizes in 16..128")
+            capacity = sizes[int(layer_id)]
         with open(cache_file) as source:
             rankings = json.load(source)
         ranked_global_ids = rankings.get(layer_id, [])
@@ -1568,19 +1632,23 @@ class CompressedTensorsWNA16MoEMethod(CompressedTensorsMoEMethod):
                 else None
             ),
             slot_ages=(
-                torch.arange(
-                    len(global_ids),
-                    0,
-                    -1,
-                    dtype=torch.int32,
-                    device=original_map.device,
+                (
+                    lrfu_initial_ages(global_ids, original_map.device)
+                    if LRFU
+                    else torch.arange(
+                        len(global_ids),
+                        0,
+                        -1,
+                        dtype=torch.int32,
+                        device=original_map.device,
+                    )
                 )
                 if self._dynamic_lru_enabled
                 else None
             ),
             clock=(
                 torch.tensor(
-                    [len(global_ids)],
+                    [0 if LRFU else len(global_ids)],
                     dtype=torch.int32,
                     device=original_map.device,
                 )

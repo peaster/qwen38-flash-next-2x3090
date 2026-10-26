@@ -224,13 +224,24 @@ def _build_slots(state):
                 [e.index for e in borrowed], state.device)
 
 
+def _slot_ids(caches):
+    """Every layer's slot ids in one device-to-host copy; layers may differ in slot count."""
+    flat = torch.cat([c.slot_global_ids for c in caches]).to('cpu').tolist()
+    out, start = [], 0
+    for c in caches:
+        n = c.slot_global_ids.numel()
+        out.append(flat[start:start + n])
+        start += n
+    return out
+
+
 def restore_borrowed():
     """Rewrite borrowed layers' hot rows from the immutable source pool."""
     for state in _devices.values():
         if not state.hot_clobbered:
             continue
         entries = state.borrowed_entries
-        ids = torch.stack([e.cache.slot_global_ids for e in entries]).to('cpu').tolist()
+        ids = _slot_ids([e.cache for e in entries])
         stream = state.stream
         stream.wait_stream(torch.cuda.current_stream(state.device))
         with torch.cuda.stream(stream):
@@ -267,7 +278,7 @@ def _snapshot(state):
     without running Python, so the hot set cannot be tracked on the host.
     """
     order = _positions(state)
-    ids = torch.stack([state.entries[i].cache.slot_global_ids for i in order]).to('cpu').tolist()
+    ids = _slot_ids([state.entries[i].cache for i in order])
     state.snapshot_done = torch.cuda.Event()
     state.snapshot_done.record(torch.cuda.current_stream(state.device))
     changed = []

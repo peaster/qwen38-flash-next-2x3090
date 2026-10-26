@@ -3,6 +3,7 @@
 import triton
 import triton.language as tl
 from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors_moe.compressed_tensors_moe_wna16 import _update_lru_expert_map_kernel as _serial
+from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors_moe.compressed_tensors_moe_wna16 import LRFU, LRFU_C, LRFU_REBASE, _lrfu_touch
 
 
 @triton.jit
@@ -10,8 +11,10 @@ def update_kernel(global_ids_ptr, source_map_ptr, cache_map_ptr,
                   slot_global_ids_ptr, slot_ages_ptr, clock_ptr,
                   miss_local_ids_ptr, miss_slots_ptr,
                   num_ids: tl.constexpr, global_num_experts: tl.constexpr,
-                  capacity: tl.constexpr, id_block: tl.constexpr,
+                  capacity, id_block: tl.constexpr,
                   capacity_block: tl.constexpr):
+    # capacity is a runtime argument: layers with different slot counts
+    # (QWEN38_HOT_CACHE_LAYER_SIZES) share the kernels of their capacity_block.
     r = tl.arange(0, id_block)
     s = tl.arange(0, capacity_block)
     valid_r = r < num_ids
@@ -20,6 +23,19 @@ def update_kernel(global_ids_ptr, source_map_ptr, cache_map_ptr,
     old_ids = tl.load(slot_global_ids_ptr + s, valid_s, -1)
     ages = tl.load(slot_ages_ptr + s, valid_s, 0)
     clock = tl.load(clock_ptr)
+    if LRFU:
+        if clock >= LRFU_REBASE:
+            shift = LRFU_REBASE * LRFU_C
+            e = tl.arange(0, global_num_experts)
+            keys = tl.load(slot_ages_ptr + capacity + e).to(tl.float32, bitcast=True)
+            tl.store(slot_ages_ptr + capacity + e,
+                     tl.maximum(keys - shift, 0.0).to(tl.int32, bitcast=True))
+            ages = tl.maximum(ages.to(tl.float32, bitcast=True) - shift, 0.0).to(tl.int32, bitcast=True)
+            tl.store(slot_ages_ptr + s, ages, valid_s)
+            clock = clock - LRFU_REBASE
+            tl.store(clock_ptr, clock)
+            # The serial fallback below re-reads this state from memory.
+            tl.debug_barrier()
     global_ok = valid_r & (requested >= 0) & (requested < global_num_experts)
     safe_ids = tl.minimum(tl.maximum(requested, 0), global_num_experts - 1)
     local = tl.load(source_map_ptr + safe_ids, global_ok, -1)
@@ -54,11 +70,24 @@ def update_kernel(global_ids_ptr, source_map_ptr, cache_map_ptr,
         final_ids = tl.where(has_new, new_ids, old_ids)
         used = (final_ids[:, None] == requested[None, :]) & is_local[None, :]
         last = tl.max(tl.where(used, r[None, :], -1), axis=1)
-        final_ages = tl.where(last >= 0, clock + last + 1, ages)
+        if LRFU:
+            # Per-expert keys follow the slots (see compressed_tensors_moe_wna16).
+            touch = is_local & first
+            expert_keys = _lrfu_touch(tl.load(slot_ages_ptr + capacity + safe_ids, touch, 0),
+                                      clock.to(tl.float32) * LRFU_C)
+            tl.store(slot_ages_ptr + capacity + safe_ids, expert_keys, touch)
+            pick = used & touch[None, :]
+            final_ages = tl.where(tl.sum(pick.to(tl.int32), axis=1) > 0,
+                                  tl.sum(tl.where(pick, expert_keys[None, :], 0), axis=1), ages)
+        else:
+            final_ages = tl.where(last >= 0, clock + last + 1, ages)
         tl.store(cache_map_ptr + old_ids, -1, valid_s & has_new & (old_ids >= 0))
         tl.store(cache_map_ptr + safe_ids, victims, misses)
         tl.store(slot_global_ids_ptr + s, final_ids, valid_s)
         tl.store(slot_ages_ptr + s, final_ages, valid_s)
         tl.store(miss_local_ids_ptr + r, tl.where(misses, local, -1), valid_r)
         tl.store(miss_slots_ptr + r, tl.where(misses, victims, -1), valid_r)
-        tl.store(clock_ptr, clock + num_ids)
+        if LRFU:
+            tl.store(clock_ptr, clock + 1)
+        else:
+            tl.store(clock_ptr, clock + num_ids)

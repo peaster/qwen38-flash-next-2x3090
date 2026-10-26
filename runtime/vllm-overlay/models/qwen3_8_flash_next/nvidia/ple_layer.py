@@ -1646,6 +1646,7 @@ class Qwen3_8FlashNextPLELayer(nn.Module, MambaBase):
         embeddings = self._dequantize_embeddings(embeddings, hidden_states.dtype)
         key, _ = self.key_proj(embeddings)
         value, _ = self.value_proj(embeddings)
+        del embeddings
         abliteration.project_(value, self._abliteration_r)
         token_count = hidden_states.shape[0]
         key = key.reshape(token_count, self.hc_count, self.hidden_size)
@@ -1653,8 +1654,12 @@ class Qwen3_8FlashNextPLELayer(nn.Module, MambaBase):
         key = self._apply_norm(self.norm_key, key)
         query = self._apply_norm(self.norm_query, query)
         gate = (key * query).sum(dim=-1, keepdim=True) / math.sqrt(self.hidden_size)
+        # The normalized key and query are residual-sized (160 MiB each per 8K
+        # prefill chunk); free them before the conv branch allocates its own.
+        del key, query
         gate = torch.sigmoid(gate.sign() * gate.abs().clamp_min(1e-6).sqrt())
         gated_value = gate * value.unsqueeze(-2)
+        del value
         normalized = self._apply_norm(self.norm_conv, gated_value).flatten(-2)
         torch.ops.vllm.qwen3_8_flash_next_ple_short_conv(
             normalized,

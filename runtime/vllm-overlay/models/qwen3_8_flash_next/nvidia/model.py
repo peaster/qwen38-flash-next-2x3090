@@ -284,7 +284,7 @@ class Qwen3_8FlashNextDecoderLayer(nn.Module):
 
     def forward(
         self,
-        hidden_states: torch.Tensor,
+        hidden_states: torch.Tensor | list[torch.Tensor],
         prev_block_output: torch.Tensor | None,
         prev_injection: torch.Tensor | None,
         positions: torch.Tensor,
@@ -293,6 +293,14 @@ class Qwen3_8FlashNextDecoderLayer(nn.Module):
         query_start_loc: torch.Tensor | None,
         ngram_context: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if isinstance(hidden_states, list):
+            # The decoder loop hands over its only reference in a one-element
+            # list, so the stream state from the previous layer is freed as
+            # soon as the first combine below replaces it. A tensor argument
+            # stays referenced by the caller (and nn.Module.__call__) for the
+            # whole layer: one extra residual-sized buffer (160 MiB per 8K
+            # prefill chunk) at every activation peak.
+            hidden_states = hidden_states.pop()
         attn_hc = self.attn_hyper_connection
         if self.ple is not None:
             # PLE adds directly to the multi-stream state, so pending HC state
@@ -530,8 +538,10 @@ class Qwen3_8FlashNextModel(nn.Module):
             enumerate(self.layers), self.start_layer, self.end_layer
         ):
             last_layer = layer
+            carry = [hidden_states]
+            del hidden_states
             hidden_states, block_output, injection = layer(
-                hidden_states=hidden_states,
+                hidden_states=carry,
                 prev_block_output=block_output,
                 prev_injection=injection,
                 positions=positions,

@@ -333,6 +333,57 @@ Do not use `QWEN38_EMBED_UVA=1` without the PLE table off the host on a 128 GB m
 numbers as 3090 claims for the x16 benchmark host. Two long runs per configuration: differences under about 5%
 are noise.
 
+## October 25 expert cache policy and prefill-memory trims
+
+`benchmarks/2026-10-25/` measured three changes on the October 3 x8 host. On that host decode waits for expert
+copies: a verify step costs 17.0–17.3 ms plus 176–179 µs per miss on the slower EP rank, summed over the 48 MoE
+layers (CUDA-event fit, R² ≥ 0.997, hot 64–96). Every MoE layer ends in an EP collective, so the per-step
+maximum of the two ranks counts, not the mean. A lever that does not change that miss count does not change
+decode here.
+
+- Prefill-memory trims, always on (`models/qwen3_8_flash_next/nvidia/ple_layer.py`, `model.py`). The PLE forward
+  deletes `embeddings`, the normalized `key`/`query` and `value` once consumed; the decoder loop passes the stream
+  state to each layer in a one-element list that the layer empties, so the previous layer's state dies at the
+  first combine instead of living through the whole layer (`nn.Module.__call__` and the caller otherwise hold
+  it). The 8K-chunk transient fell 1,126 → 868 MiB. Reference drops only: greedy tokens matched in 12
+  comparisons and logprob differences matched the control's own run-to-run spread. The MTP head reuses the
+  decoder layer with a plain tensor; the list form is optional.
+- `QWEN38_LRU_LRFU_LAMBDA` (opt-in, 0.95 in the x8 profiles). LRFU replacement in the existing LRU kernels
+  (`lru_map.update_kernel` and its serial fallback). With c = −ln λ and t the per-layer call count, an expert's
+  key ln(score) + c·t orders experts like the decayed score at any later time, and a use is
+  `key = logaddexp(key, c·t)`. Keys plus 64 are positive, so their float32 bits sort like the integer ages they
+  replace in `slot_ages`; victim selection, protection, warmup and CUDA graphs are unchanged. `slot_ages` has
+  512 more entries after the slots, one key per global expert: a score that is forgotten on eviction kept less
+  than half of the gain. The clock counts calls, and every 65,536 calls all keys and the clock drop by the same
+  amount (float32 resolution; keys that would go negative belong to scores below e⁻⁶⁴).
+- `QWEN38_HOT_CACHE_LAYER_SIZES` (opt-in): 48 comma-separated slot counts (16–128). The x8 profiles' lists were
+  fitted greedily on recorded routing (layer 0 ~10× layer 31's misses) and keep ≥64 slots in the last 8 layers,
+  whose hot pages stream staging borrows for its two 256-row slots. `stream_stage.py` snapshots slot ids with
+  one concatenated copy because layers now differ in length. The LRU kernels take `capacity` as a runtime
+  argument, so all sizes share the kernels of their `capacity_block` (64 or 128); as a constexpr it compiled
+  ~200 kernels per GPU and startup passed 25 minutes. `lru_warmup.py` now warms with the runtime's
+  `capacity_block`; it used 128 for every layer, so layers with ≤64 slots compiled their first decode kernel
+  mid-request (an 11.8 s stall).
+
+Results on one session each (held-out prompts were not used to fit either policy): the 256K profile at the same
+76 slots per layer gained 6–10% decode with prefill unchanged and passed 262,016 + 128 twice; the 128K profile
+(`configs/fast-128k-prefill.env`, 92 slots, 2.5 GB KV) gained 19–27% decode with 131K prefill at 3,981–4,342
+tok/s. With the policies on, misses fell 14% at equal VRAM, and an exact offline replay of a control session's
+routing predicted every runtime change within about 2 points. Use that replay before spending GPU time on a new
+policy.
+
+Memory lessons. hot80 at 256K and hot96 at 128K each passed or nearly passed once and then ran out of memory on
+a 320 MiB request (the HC mix RMSNorm output of an 8K chunk) with 670–790 MiB reserved but unallocated. A margin
+of ~100 MiB under `expandable_segments:False` is fragmentation-dependent: call a configuration "fits" only after
+two full-window passes and keep at least the previous profile's driver-free margin at the worst chunk. The trims
+lowered peak allocation ~300 MiB but reserved memory only 80–180 MiB. Per-layer sizes cost 50–170 MiB outside
+PyTorch (one Humming configuration and kernel set per distinct size, graph capture 0.21 vs 0.10 GiB) and first-use
+compiles: ~8 minutes of LRU kernels on an empty `JIT_CACHE_DIR` and ~5 s TTFT on a session's first short request.
+Lost in replay: static pinning, admission control and rank placement. Slower on this host: the 64 GB
+hot-only CPU path (44 vs 34 ms per step against PCIe LRU). Untested: fetching the busier rank's misses over the
+other GPU's link, and computing part of the misses on the CPU. MTP acceptance on these prompts is 0.40–0.76 per draft token, far below the historical 86–90%; it is a
+separate decode lever.
+
 ## Published runtime images
 
 From v0.3.0 on, `.github/workflows/publish-image.yml` builds `docker/Dockerfile`
@@ -1084,7 +1135,7 @@ These are experiments, not promised wins:
 | MTP quantization | `scripts/build_mtp_int4.py` |
 | Self-contained draft | `scripts/compact_mtp_checkpoint.py` |
 | PLE process and IPC | `runtime/vllm-overlay/v1/ple_offload/` |
-| Expert hot cache and LRU | `runtime/vllm-overlay/model_executor/layers/quantization/auto_gptq.py` and `compressed_tensors_moe_wna16.py` |
+| Expert hot cache and LRU | `runtime/vllm-overlay/model_executor/layers/quantization/auto_gptq.py`, `compressed_tensors_moe_wna16.py`, `lru_map.py`, `lru_warmup.py` |
 | QSA selector and kernels | `runtime/vllm-overlay/models/qwen3_8_flash_next/nvidia/ops/qsa.py` |
 | Hybrid QSA cache | `runtime/vllm-overlay/models/qwen3_8_flash_next/common/qsa_cache.py` |
 | MTP model integration | `runtime/vllm-overlay/models/qwen3_8_flash_next/nvidia/mtp.py` |

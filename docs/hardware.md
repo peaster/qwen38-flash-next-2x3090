@@ -131,6 +131,10 @@ host process. Speed does not change; on the October 3 test host (2× RTX 3090 at
 [prefill profile](../configs/fast-256k-prefill.env) spends on 8,192-token chunks. Pass the card to the
 container with `GPU_DEVICES` (a CDI spec generated before the card was installed does not list it under
 `all`). Results and limits: [`benchmarks/2026-10-03/`](../benchmarks/2026-10-03/README.md).
+Since October 25 that profile also spends its 76 hot experts per layer unevenly and replaces them by LRFU
+instead of LRU (decode +6–10% on that host, prefill unchanged); the optional
+[128K variant](../configs/fast-128k-prefill.env) trades half the context for 92 hot experts (+19–27% decode).
+Results: [`benchmarks/2026-10-25/`](../benchmarks/2026-10-25/README.md).
 
 ## Why system memory bandwidth matters
 

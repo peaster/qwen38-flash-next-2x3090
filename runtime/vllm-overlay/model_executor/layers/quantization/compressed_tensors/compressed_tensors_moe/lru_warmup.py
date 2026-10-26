@@ -50,7 +50,10 @@ def warmup_once(method, layer):
         miss_ids, miss_slots = torch.empty_like(ids), torch.empty_like(ids)
         update_kernel[(1,)](ids, cache.cold_map, *state, miss_ids, miss_slots,
             num_ids=count, global_num_experts=512, capacity=cache.slot_global_ids.numel(),
-            id_block=triton.next_power_of_2(count), capacity_block=128, num_warps=4)
+            # Same specialization as the runtime call: capacity_block follows the slot count,
+            # so layers with <= 64 slots (per-layer sizes) are warmed too.
+            id_block=triton.next_power_of_2(count),
+            capacity_block=triton.next_power_of_2(cache.slot_global_ids.numel()), num_warps=4)
         for source, output in pairs:
             method._gather_lru_rows(source, output, miss_ids, miss_slots, count)
     torch.cuda.synchronize(device)
