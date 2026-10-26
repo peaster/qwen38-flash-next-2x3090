@@ -19,3 +19,6 @@ __pycache__/
 weights/
 /jit-cache/
 /.env.bak*
+
+# Raw research outputs (routing traces, memory snapshots, server logs): local only.
+research/*/runs/
